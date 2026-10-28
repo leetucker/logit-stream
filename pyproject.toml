@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logit-stream"
+version = "0.1.0"
+description = "Out-of-core logit models by streamed Newton: binary, multinomial, ordered and conditional logit, with absorbed fixed effects"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Lee Tucker" }]
+keywords = ["econometrics", "logit", "multinomial logit", "ordered logit", "conditional logit",
+            "discrete choice", "out-of-core", "fixed effects", "imputation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+requires-python = ">=3.10"
+dependencies = [
+    # the streaming engine, the result base classes and the formula front end;
+    # binary logit is hdfe-stream's feglm_stream
+    "hdfe-stream[formula]>=0.6,<0.7",
+    "polars>=1.37,!=1.41.*",
+    "numpy>=1.24",
+    "numba>=0.59",
+    "pyarrow>=14.0",
+    "scipy>=1.11",
+    # keeps BLAS to one thread during passes that run numba's parallel kernels
+    "threadpoolctl>=3.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/leetucker/logit-stream"
+Source = "https://github.com/leetucker/logit-stream"
+Issues = "https://github.com/leetucker/logit-stream/issues"
+Documentation = "https://leetucker.github.io/logit-stream/"
+Changelog = "https://github.com/leetucker/logit-stream/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+# benchmarks/: the libraries compared against, and matplotlib for the figures.
+# pylogit 1.0.1 needs compatibility aliases on Python >= 3.10 and NumPy >= 2.4,
+# which the benchmark sets (see benchmarks/README.md); jaxlogit is installed
+# separately (it brings JAX)
+benchmark = [
+    "scikit-learn>=1.5",
+    "statsmodels>=0.14",
+    "xlogit>=0.2.7",
+    "pylogit>=1.0.1",
+    "mord>=0.7",
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+]
+# docs/: the documentation site, built with Sphinx (see docs/conf.py)
+docs = [
+    "sphinx>=8.0",
+    "myst-parser>=4.0",
+    "furo>=2024.8.6",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
+# the test suite compares against scikit-learn and statsmodels
+test = [
+    "pytest>=7.0",
+    "scikit-learn>=1.5",
+    "statsmodels>=0.14",
+    "pandas>=2.0",
+]
+
+[tool.setuptools.package-data]
+logit_stream = ["py.typed"]
+
+[tool.setuptools.packages.find]
+include = ["logit_stream*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# the benchmarks' R and Biogeme environments
+extend-exclude = ["benchmarks/external/.r", "benchmarks/external/.biogeme"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# zip(strict=) everywhere, and `l` for the multinomial's level index (the
+# usual notation in the formulas these implement)
+ignore = ["B905", "E741"]

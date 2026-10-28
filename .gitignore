@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+docs/_build/
+benchmarks/data/
+benchmarks/results/work/
+benchmarks/results/*.log
+examples/output/
+benchmarks/external/.r/
+benchmarks/external/.biogeme/
+# the EC2 launcher's settings name the AWS account's bucket (as in hdfe-stream)
+benchmarks/ec2/
+benchmarks/results/logs/
+benchmarks/results/random_check/
+# working notes, kept locally
+DESIGN_NOTES.md
