@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -501,6 +502,28 @@ def _warm_start(theta0, start, model, fml):
     return th
 
 
+def _physical_memory_gb():
+    """The machine's physical memory in GB: sysconf where there is one, the
+    Windows API otherwise; 16 if neither answers."""
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
+    except (AttributeError, ValueError, OSError):
+        pass
+    if sys.platform == "win32":
+        import ctypes
+
+        class _Status(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                        ("total", ctypes.c_ulonglong), ("avail", ctypes.c_ulonglong),
+                        ("page_total", ctypes.c_ulonglong), ("page_avail", ctypes.c_ulonglong),
+                        ("virt_total", ctypes.c_ulonglong), ("virt_avail", ctypes.c_ulonglong),
+                        ("ext", ctypes.c_ulonglong)]
+        status = _Status(length=ctypes.sizeof(_Status))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.total / 1e9
+    return 16.0
+
+
 def _crv3(driver, fit, U, cl_index, key, spec, logger):
     """The cluster jackknife (CV3; MacKinnon, Nielsen and Webb 2023):
     (G - 1) / G sum_g d_g d_g', with d_g the change in the estimates from
@@ -512,7 +535,7 @@ def _crv3(driver, fit, U, cl_index, key, spec, logger):
     col, G = cl_index[key]
     P = len(fit.theta)
     need = G * P * P * 8 / 1e9
-    mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
+    mem = _physical_memory_gb()
     if need > 0.25 * mem:
         raise MemoryError(f"{spec.fml}: CRV3 by {key.split(':', 1)[1]!r} needs {need:.1f} GB "
                           f"for each cluster's information ({G:,} clusters x {P} parameters "

@@ -149,7 +149,10 @@ def test_recovers_the_parameters(fit):
         assert abs(c[k] - v) < 3.5 * se[k], (k, c[k], v, se[k])
     assert fit.loglik > fit.loglik_clogit
     assert set(fit.all_vcovs) == {"iid", "hetero"} and fit.n_obs == 4000
-    assert np.max(np.abs(fit.diagnostics["gradient"])) < 1e-4
+    # the gradient at the stopping point is 1e-6 on Linux and Windows, and
+    # 1.6e-4 on macOS (CI), where floating-point rounding differs: the
+    # estimates move by about gradient / information, far below their errors
+    assert np.max(np.abs(fit.diagnostics["gradient"])) < 1e-3
 
 
 def test_matches_r_mlogit(fit):

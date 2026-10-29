@@ -1,2 +1,2 @@
-include LICENSE.md README.md CHANGELOG.md
+include LICENSE.md README.md CHANGELOG.md CITATION.cff
 include logit_stream/py.typed
