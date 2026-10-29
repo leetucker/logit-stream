@@ -57,6 +57,7 @@ from _harness import (
     measure,
     run_child,
     run_configs,
+    warm_up,
     write_machine_info,
 )
 from choice_benchmark import long_from_wide, wide
@@ -255,6 +256,9 @@ def check(draws_list=(100, 500, 2000)):
             if isinstance(cmd, str):
                 print(f"{label:10s} R={draws:5d}  {cmd}")
                 continue
+            if cmd is None and label.startswith("logit-stream"):
+                warm_up(SCRIPT, f"{lib}:{draws}", lambda: (752, path),
+                        RESULTS_DIR / "work" / lib)
             rep = measure(SCRIPT, f"{lib}:{draws}", 752, path, RESULTS_DIR / "work" / lib,
                           timeout=TIMEOUT_S, command=cmd)
             if rep.get("status") != "ok":
@@ -298,7 +302,8 @@ def main(argv=None):
         configs = {label: f"{lib}:{args.draws}" for label, lib in CONFIGS.items()}
         run_configs(SCRIPT, out, "mixed", n, path, configs, command=commands(path, args.draws),
                     timeout=args.timeout, only=args.only, absolute=("sd.TT",),
-                    extra=lambda _label: {"draws": args.draws})
+                    extra=lambda _label: {"draws": args.draws},
+                    warmup=lambda _kind: (752, data_path(752)))
 
 
 if __name__ == "__main__":

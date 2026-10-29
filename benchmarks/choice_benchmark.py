@@ -285,7 +285,8 @@ def main(argv=None):
         for model in args.model or list(CONFIGS):
             configs = {label: f"{model}:{lib}" for label, lib in CONFIGS[model].items()}
             run_configs(SCRIPT, out, model, n, path, configs, command=commands(path),
-                        timeout=args.timeout, only=args.only)
+                        timeout=args.timeout, only=args.only,
+                        warmup=lambda _kind: (6_768, data_path(6_768)))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,48 @@
+{
+ "cpu": "AMD EPYC 7R13 Processor",
+ "logical_cpus": 16,
+ "memory_gb": 249.7,
+ "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+ "python": "3.12.3",
+ "logit-stream": "0.1.0",
+ "hdfe-stream": "0.6.0",
+ "scikit-learn": "1.9.1",
+ "statsmodels": "0.15.0",
+ "xlogit": "0.2.7",
+ "jaxlogit": "1.0.0",
+ "jax": "0.12.0.1",
+ "mord": "0.7",
+ "pyfixest": "0.60.0",
+ "polars": "2.1.0",
+ "numpy": "2.5.4",
+ "numba": "0.68.0",
+ "scipy": "1.18.1",
+ "pandas": "3.1.0",
+ "cupy-cuda13x": "14.2.0",
+ "measured": "2026-10-28",
+ "gpu": "NVIDIA H100 80GB HBM3",
+ "gpu_memory_gb": 79.2,
+ "cuda_runtime": 13020,
+ "cuda_driver": 13020,
+ "ec2": {
+  "run": "2026-10-28T1926Z_p5.4xlarge_spot_gpu",
+  "instance_type": "p5.4xlarge",
+  "market": "spot",
+  "region": "us-east-2",
+  "az": "us-east-2b",
+  "memory_max": "29600M (systemd MemoryMax)",
+  "data_disk": "local NVMe (/opt/dlami/nvme, mounted by the image)"
+ },
+ "code": {
+  "logit-stream": {
+   "commit": "d8c46eba6df99752c06b742ff6c302bf0855e77c",
+   "describe": "d8c46eb",
+   "dirty": false
+  },
+  "hdfe-stream": {
+   "commit": "49616ae5f7362fd2d4c37deb69d62dde1dbcd49e",
+   "describe": "49616ae",
+   "dirty": false
+  }
+ }
+}

@@ -56,11 +56,13 @@ Python 3.10 or later.
 
 ## Benchmarks
 
-`benchmarks/` compares logit-stream with scikit-learn, statsmodels and mord on
-American Community Survey microdata (10,000 to 12.9 million adults), and with
-xlogit, pylogit, statsmodels and jaxlogit on the Swissmetro choice survey,
-resampled to 10 million choice sets. See `benchmarks/README.md` and the
-documentation's benchmark pages.
+`benchmarks/` compares logit-stream with scikit-learn, statsmodels, mord and
+R's glm, fixest, nnet, MASS and ordinal on American Community Survey
+microdata (10,000 to 12.9 million adults); with xlogit, pylogit,
+statsmodels, jaxlogit, Biogeme and R's mlogit and logitr on the Swissmetro
+choice survey, resampled to 10 million choice sets; on short panels with
+statsmodels and R's survival, fixest and alpaca; and on a GPU. See
+`benchmarks/README.md` and the documentation's benchmark pages.
 
 ## License
 

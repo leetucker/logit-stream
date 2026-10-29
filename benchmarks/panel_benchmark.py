@@ -180,7 +180,8 @@ def main(argv=None):
             configs = {label: f"{model}:{lib}" for label, lib in CONFIGS[model].items()}
             run_configs(SCRIPT, out, model, n, path, configs, command=commands(path),
                         timeout=args.timeout, only=args.only,
-                        extra=lambda _label: {"periods": PERIODS})
+                        extra=lambda _label: {"periods": PERIODS},
+                        warmup=lambda _kind: (10_000, data_path(10_000)))
             add_errors(out, model, n)
 
 

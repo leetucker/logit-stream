@@ -12,6 +12,7 @@ python benchmarks/mixed_benchmark.py    # mixed logit: 752 to 1M respondents
 python benchmarks/panel_benchmark.py    # conditional, fixed-effects and bias-corrected logit for panels
 python benchmarks/gpu_benchmark.py      # CPU against GPU (needs an NVIDIA GPU and CuPy)
 python benchmarks/plot_benchmarks.py    # docs/figures/*.svg from results/*.csv
+python benchmarks/make_tables.py        # the tables in docs/benchmarks/*.md from results/*.csv
 ```
 
 | suite | models | compared with |
@@ -24,7 +25,15 @@ python benchmarks/plot_benchmarks.py    # docs/figures/*.svg from results/*.csv
 
 Each configuration runs in its own subprocess (`_harness.py`), which reports
 wall time (reading the data plus fitting), peak resident memory (`VmHWM`) and
-the peak size of its work directory. Results are upserted into
+the peak size of its work directory. Before its first logit-stream
+configuration of each kind, every process fits that configuration once on a
+small data set, untimed (`_harness.warm_up`; the GPU suite's children warm up
+themselves): numba compiles logit-stream's and hdfe-stream's kernels on first
+use and caches them on disk, a one-time cost that would otherwise be charged
+to whichever configuration ran first, and to the first after a reboot. The
+other packages are not warmed up, as in hdfe-stream: their compilation (JAX's,
+for jaxlogit and Biogeme) is per process, which every one of their fits pays.
+Results are upserted into
 `results/<suite>.csv` as they come, so a run can be interrupted and resumed for
 some sizes (`acs_benchmark.py 3000000 --model ordered --only "polr (R)"`);
 `results/machine.json` records the machine and library versions. A

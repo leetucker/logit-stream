@@ -145,6 +145,13 @@ LOW_MEMORY = {"block_mb": 8, "chunk_mb": 8}
 # data
 # --------------------------------------------------------------------------
 
+def warmup_data(kind):
+    """The data a logit-stream configuration warms up on: 10,000 people, or
+    100,000 for the random intercepts (at 10,000 a PUMA has about four)."""
+    n = 100_000 if kind.endswith(("-re", "-fere")) else 10_000
+    return n, sample_path(n)
+
+
 def sample_path(n):
     import polars as pl
     if not SOURCE.exists():
@@ -461,7 +468,8 @@ def main(argv=None):
             configs.update({label: f"{model}:{lib}" for label, lib in CONFIGS[model].items()
                             if lib in OTHER_MODEL})
             run_configs(SCRIPT, out, model, n, path, configs, command=r_command(model, path),
-                        timeout=args.timeout, only=args.only, reference=REFERENCE)
+                        timeout=args.timeout, only=args.only, reference=REFERENCE,
+                        warmup=warmup_data)
 
 
 if __name__ == "__main__":

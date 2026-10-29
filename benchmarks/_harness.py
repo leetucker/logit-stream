@@ -127,7 +127,8 @@ def run_child(runner, config, n, path, workdir):
 
 # how R and Python say that an allocation was refused
 OUT_OF_MEMORY = ("MemoryError", "Unable to allocate", "OutOfMemory", "cannot allocate",
-                 "out of memory", "RESOURCE_EXHAUSTED")
+                 "out of memory", "RESOURCE_EXHAUSTED",
+                 "exceed the memory budget")  # Biogeme refusing a Hessian that is too large
 
 
 def measure(script, config, n, path, workdir, timeout=None, command=None, env=None):
@@ -350,8 +351,32 @@ def coef_diff(coefs, ref, absolute=()):
                for c in common)
 
 
+# what this process has warmed up (warm_up): a kind once per process, so each
+# step of an EC2 run, and a step restarted after a spot interruption, warms
+# up again before it times anything
+_WARMED = set()
+
+
+def warm_up(script, kind, warmup, workdir):
+    """Fit `kind` once, untimed and discarded, on `warmup()`'s small data
+    ((n, path)), so that compiling the numba kernels (cached on disk) and
+    reading them back after a reboot is not charged to the first
+    configuration that happens to run. logit-stream's own configurations
+    only, as in hdfe-stream's benchmarks: the other packages' compilation is
+    per process, which every one of their fits pays."""
+    if kind in _WARMED:
+        return
+    _WARMED.add(kind)
+    n, path = warmup()
+    rep = measure(script, kind, n, path, workdir, timeout=600)
+    took = (f"{rep['t_read'] + rep['t_fit']:.1f} s" if rep.get("status") == "ok"
+            else rep.get("status"))
+    print(f"(warm-up: {kind} on {n:,} rows, {took})", flush=True)
+
+
 def run_configs(script, out, model, n, path, configs, *, command=None, timeout=None,
-                reference="logit-stream", absolute=(), only=None, extra=None, env=None):
+                reference="logit-stream", absolute=(), only=None, extra=None, env=None,
+                warmup=None):
     """Measure each of `configs` ({label: kind}) at size `n` and write its row:
     skip what this run measured already (`is_done`) and what failed at a
     smaller size (`failed_smaller`). `command(label, kind)` gives an external
@@ -361,7 +386,9 @@ def run_configs(script, out, model, n, path, configs, *, command=None, timeout=N
     {label: its reference} for the labels compared with another (a fit of the
     same model, measured before them; None: not compared); `extra(label)`
     adds columns to the row; `env(label)` sets environment variables for the
-    child; `timeout` is seconds, or a function of the label."""
+    child; `timeout` is seconds, or a function of the label; `warmup(kind)`
+    gives the small data ((n, path)) a logit-stream configuration is warmed
+    up on first (warm_up)."""
     # the fits measured before at this size (a reference for a configuration
     # run alone, with --only), then this call's
     measured = {r["configuration"]: json.loads(r["coefs"]) for r in _rows(out)
@@ -395,9 +422,12 @@ def run_configs(script, out, model, n, path, configs, *, command=None, timeout=N
         if isinstance(cmd, str):
             print(f"{name} {cmd}", flush=True)
             continue
+        workdir = RESULTS_DIR / "work" / kind.replace(":", "_")
+        if warmup and cmd is None and label.startswith("logit-stream"):
+            warm_up(script, kind, lambda k=kind: warmup(k), workdir)
         print(name, end=" ", flush=True)
         limit = timeout(label) if callable(timeout) else timeout
-        rep = measure(script, kind, n, path, RESULTS_DIR / "work" / kind.replace(":", "_"),
+        rep = measure(script, kind, n, path, workdir,
                       timeout=limit, command=cmd, env=env(label) if env else None)
         row["status"] = rep.pop("status")
         if row["status"] != "ok":
