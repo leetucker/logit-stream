@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Pinned hdfe-stream to ensure compatability with `polars-runtime-64`. Fits that
+  go through hdfe-stream were broken with 64-bit row indices (binary models, and
+  any model with absorbed fixed effects) because of an issue in hdfe-stream
+  0.6.1. The fix is in that library, this library just pins the version and
+  incorporates a regression test.
+
 ## 0.1.0
 
 The first release: logit models by streamed Newton's method, for data that
