@@ -62,7 +62,7 @@ def _version():
         from importlib.metadata import version
         return version("logit-stream")
     except Exception:                   # noqa: BLE001 -- not installed
-        return "0.1.0"
+        return "0.2.0"
 
 
 __version__ = _version()

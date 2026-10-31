@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import tempfile
 import time
 from collections.abc import Sequence
@@ -23,11 +22,13 @@ from typing import Any
 import numpy as np
 import polars as pl
 from hdfe_stream.core.report import warn
+from hdfe_stream.core.resources import MemoryBudget
 from hdfe_stream.core.results_base import vcov_key
 from hdfe_stream.core.store import PolarsEngine
 from hdfe_stream.core.workspace import Run
 
 from ._frontend import _plan
+from ._limits import limited
 from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
 from .newton import _Driver
 from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
@@ -96,6 +97,7 @@ def _clusterings(vcov, cluster):
     return key, clusters, hetero, requests
 
 
+@limited
 def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          cluster: Sequence[str] | str = (), weights: str | None = None,
          weights_type: str = "aweights", levels: Sequence | None = None,
@@ -106,7 +108,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          log_level=None, random: str | None = None, random_cov: str = "unstructured",
          random_tol: float = 1e-6, random_method: str = "laplace", firth: bool = False,
          offset=None, start=None, device: str = "cpu", link: str = "logit",
-         altwise: bool = False, poisson_options: dict | None = None):
+         altwise: bool = False, poisson_options: dict | None = None,
+         profile: bool = False, n_threads: int | None = None,
+         max_memory_gb: float | None = None, memory_reserve: float | None = None):
     if poisson_options is not None and kind != "mlogit":
         raise ValueError("poisson_options= is for mlogit_stream with several fixed effects")
     if weights_type not in ("aweights", "fweights"):
@@ -172,6 +176,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
         if l2:
             raise ValueError("l2= and random= cannot be combined")
     vkey, clusters, hetero, requests = _clusterings(vcov, cluster)
+    budget = MemoryBudget(max_memory_gb, memory_reserve)
 
     def log(msg):
         _log(verbose, msg, logger, log_level)
@@ -214,6 +219,14 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                 raise ValueError(f"{spec.fml}: firth= is not available with an absorbed "
                                  "fixed effect")
             if len(spec.fe) > 1 and kind == "mlogit":
+                if profile:
+                    from .profile import profile_multi_fe
+                    results.append(profile_multi_fe(
+                        spec, lf, data, weights=weights, weights_type=weights_type,
+                        clusters=clusters, requests=requests, hetero=hetero, vkey=vkey,
+                        levels=levels, options=poisson_options, budget=budget,
+                        n_threads=n_threads, tol=tol, maxiter=maxiter))
+                    continue
                 # several: as a Poisson regression on the data expanded by level
                 bad = [nm for nm, v in (("l2=", l2), ("start=", start),
                                         ("storage='memory'", storage == "memory"))
@@ -236,6 +249,14 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                 raise ValueError(f"{spec.fml}: one absorbed fixed effect is available for "
                                  f"{_KINDS[kind]} (got {list(spec.fe)}); put small "
                                  "dimensions in as C(var)")
+        if profile:
+            from .profile import profile_model
+            results.append(profile_model(
+                kind, spec, lf, data, weights=weights, clusters=clusters, requests=requests,
+                case=case, levels=levels, storage=storage, dtype=dtype, block_mb=block_mb,
+                chunk_mb=chunk_mb, offset=offset, random=random, firth=firth,
+                n_threads=n_threads, budget=budget))
+            continue
         results.append(_fit_one(kind, spec, lf, engine, vkey=vkey, clusters=clusters,
                                 requests=requests,
                                 hetero=hetero, weights=weights, weights_type=weights_type,
@@ -246,7 +267,10 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
                                 firth=firth, offset=offset, start=start, device=device,
-                                link=link, altwise=altwise))
+                                link=link, altwise=altwise, budget=budget))
+    if profile:
+        from .profile import combine_profiles
+        return combine_profiles(results)
     return results[0] if len(results) == 1 else LogitMulti(results)
 
 
@@ -254,7 +278,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
              random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
-             device=None, link="logit", altwise=False):
+             device=None, link="logit", altwise=False, budget=None):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -290,7 +314,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             else None
         if random is not None:
             keys = {nm: ("fe" if i == 0 else f"fe{i + 1}") for i, nm in enumerate(spec.fe)}
-            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger,
+            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger, budget=budget,
                                 cov=random_cov)
             if clusters:
                 cl = {k: (i, 0) for i, k in enumerate(clusters)}
@@ -302,7 +326,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                         f"crossed groupings allow none; {bad} do not")
         elif spec.fe:
             from .fe import _AbsorbedFE
-            fe = _AbsorbedFE(model, p0, spec.fe[0], log=log, logger=logger)
+            fe = _AbsorbedFE(model, p0, spec.fe[0], log=log, logger=logger, budget=budget)
         driver = _Driver(p0.store, model, tol=tol, maxiter=maxiter, l2=l2, firth=firth,
                          chunk_mb=chunk_mb, device=device,
                          log=log, logger=logger, fe=fe)
@@ -366,7 +390,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             raw = {k: _sandwich(fe, fit, Hinv, U[k].T @ U[k]) for k in cl_index}
             for req, parts in requests.items():
                 if req.startswith("CRV3:"):
-                    all_vcovs[req] = _crv3(driver, fit, U, cl_index, parts[0][0], spec, logger)
+                    all_vcovs[req] = _crv3(driver, fit, U, cl_index, parts[0][0], spec, logger,
+                                           budget)
                     n_clusters[req.split(":", 1)[1]] = cl_index[parts[0][0]][1]
                     continue
                 Vc, df, Gs = _clustered(raw, parts, cl_index, req, spec.fml, logger)
@@ -502,29 +527,7 @@ def _warm_start(theta0, start, model, fml):
     return th
 
 
-def _physical_memory_gb():
-    """The machine's physical memory in GB: sysconf where there is one, the
-    Windows API otherwise; 16 if neither answers."""
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
-    except (AttributeError, ValueError, OSError):
-        pass
-    if sys.platform == "win32":
-        import ctypes
-
-        class _Status(ctypes.Structure):
-            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
-                        ("total", ctypes.c_ulonglong), ("avail", ctypes.c_ulonglong),
-                        ("page_total", ctypes.c_ulonglong), ("page_avail", ctypes.c_ulonglong),
-                        ("virt_total", ctypes.c_ulonglong), ("virt_avail", ctypes.c_ulonglong),
-                        ("ext", ctypes.c_ulonglong)]
-        status = _Status(length=ctypes.sizeof(_Status))
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return status.total / 1e9
-    return 16.0
-
-
-def _crv3(driver, fit, U, cl_index, key, spec, logger):
+def _crv3(driver, fit, U, cl_index, key, spec, logger, budget=None):
     """The cluster jackknife (CV3; MacKinnon, Nielsen and Webb 2023):
     (G - 1) / G sum_g d_g d_g', with d_g the change in the estimates from
     dropping cluster g, by one Newton step from them -- the information
@@ -535,11 +538,12 @@ def _crv3(driver, fit, U, cl_index, key, spec, logger):
     col, G = cl_index[key]
     P = len(fit.theta)
     need = G * P * P * 8 / 1e9
-    mem = _physical_memory_gb()
-    if need > 0.25 * mem:
+    budget = budget if budget is not None else MemoryBudget()
+    if not budget.fits(need):
         raise MemoryError(f"{spec.fml}: CRV3 by {key.split(':', 1)[1]!r} needs {need:.1f} GB "
                           f"for each cluster's information ({G:,} clusters x {P} parameters "
-                          "squared); use CRV1")
+                          f"squared) and {budget.headroom_gb():.1f} GB is free ({budget}); use "
+                          "CRV1, or raise max_memory_gb")
     Hg = driver.cluster_information(fit.theta, col, G)
     H, S = fit.H, U[key]
     D = np.empty((G, P))

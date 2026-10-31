@@ -44,14 +44,13 @@ import numba as nb
 import numpy as np
 import polars as pl
 from hdfe_stream.core.report import warn
+from hdfe_stream.core.resources import MemoryBudget
 from scipy.optimize import minimize
 from scipy.special import xlogy
 
 from .models import _gram, _mnl_info_sparse
 from .newton import _chunks, _design, _Driver
 from .store import CODE
-
-_MAX_GROUP_GB = 8.0
 
 
 @nb.njit(parallel=True, cache=True)
@@ -147,8 +146,9 @@ class _AbsorbedFE:
     """The fixed effect's bookkeeping, passes and linear algebra for the
     Newton driver (see the module docstring)."""
 
-    def __init__(self, model, p0, name, log, logger=None):
+    def __init__(self, model, p0, name, log, logger=None, budget=None):
         self.model, self.p0, self.name = model, p0, name
+        self.budget = budget if budget is not None else MemoryBudget()
         self.store = p0.store
         self.logger = logger
         G = p0.fe_tables[name].height
@@ -200,11 +200,12 @@ class _AbsorbedFE:
                                  "outcome never varies")
         self.n_params = int(self.free.sum())
         gb = G * self.m * max(model.P, 1) * 8 * 2 / 1e9
-        if gb > _MAX_GROUP_GB:
+        if not self.budget.fits(gb):
             raise MemoryError(
                 f"absorbing {name} needs about {gb:.1f} GB for its per-level blocks "
-                f"({G:,} levels x {self.m} x {model.P} parameters, twice); fit with fewer "
-                "covariates, or a coarser fixed effect")
+                f"({G:,} levels x {self.m} x {model.P} parameters, twice) and "
+                f"{self.budget.headroom_gb():.1f} GB is free ({self.budget}); fit with fewer "
+                "covariates, a coarser fixed effect, or a larger max_memory_gb")
 
     def loglik_fe_only(self):
         """The log-likelihood of the model with the fixed effect and no

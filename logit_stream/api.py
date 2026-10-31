@@ -342,7 +342,7 @@ mlogit_stream.__doc__ = """Out-of-core multinomial logit by streamed Newton.
         distinct values, sorted.
     poisson_options : dict, optional
         With several fixed effects: further options of hdfe-stream's
-        `fepois_stream` (``solver``, ``precond``, ``max_s_gb``,
+        `fepois_stream` (``solver``, ``precond``, ``max_memory_gb``,
         ``fixef_rm``, ...), except those the multinomial logit sets itself
         (vcov, cluster, weights, keep, workdir).""" + _RANDOM + """
 

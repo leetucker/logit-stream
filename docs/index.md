@@ -143,6 +143,7 @@ brings pyfixest), Polars, NumPy, SciPy, numba and PyArrow.
 
 examples/index
 how_it_works
+resources
 ```
 
 ```{toctree}

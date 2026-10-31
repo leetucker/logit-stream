@@ -37,6 +37,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter  # noqa: E402
 
+from _settings import LOW_MEMORY_NOTE  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 # LOGIT_BENCH_RESULTS and LOGIT_BENCH_FIGURES: elsewhere, for a trial run
 RESULTS = Path(os.environ.get("LOGIT_BENCH_RESULTS", HERE / "results"))
@@ -253,6 +255,9 @@ def figure(name, metric, theme):
         note = "Not shown: " + "; ".join(dict.fromkeys(failed)) + "."
     if spec.get("note") and metric != "disk":
         note = (note + " " + spec["note"]).strip()
+    # what a setting in the legend means, for the series drawn (on every metric, disk too)
+    if any("low memory" in label for label in handles):
+        note = (note + " " + LOW_MEMORY_NOTE).strip()
     if note:
         note = "\n".join(textwrap.wrap(note, int(width * 19)))
         fig.text(0.01, 0.01, note, color=t["muted"], fontsize=7, va="bottom")

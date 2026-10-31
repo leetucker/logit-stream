@@ -11,8 +11,9 @@ import numba as nb
 import numpy as np
 import polars as pl
 from hdfe_stream.core.report import warn
+from hdfe_stream.core.resources import MemoryBudget
 
-from ..fe import _MAX_GROUP_GB, _group_sum, _mnl_group_info, _ordered_info_derivs, _segments
+from ..fe import _group_sum, _mnl_group_info, _ordered_info_derivs, _segments
 from ..models import _gram, _mnl_info_sparse
 from ..newton import _chunks, _design, _Driver
 from ..store import CODE
@@ -41,7 +42,9 @@ class _RandomEffects(_SigmaMixin):
     """Random intercepts at one or more groupings; see the module
     docstring. Plays the role of `_AbsorbedFE` for the Newton driver."""
 
-    def __init__(self, model, p0, randoms, fixed, keys, log, logger=None, cov="unstructured"):
+    def __init__(self, model, p0, randoms, fixed, keys, log, logger=None, cov="unstructured",
+                 budget=None):
+        budget = budget if budget is not None else MemoryBudget()
         self.model, self.p0, self.store, self.logger = model, p0, p0.store, logger
         self.cov = cov
         J = model.J
@@ -169,9 +172,10 @@ class _RandomEffects(_SigmaMixin):
         G_all = sum(f.G for f in self.factors)
         gb = (G_all * self.m * max(model.P, 1) * 16
               + (U * (self.m ** 2 + self.d ** 3) * 8 if self.kind == "crossed" else 0)) / 1e9
-        if gb > _MAX_GROUP_GB:
-            raise MemoryError(f"random intercepts need about {gb:.1f} GB for their blocks; fit "
-                              "with fewer covariates, or coarser groupings")
+        if not budget.fits(gb):
+            raise MemoryError(f"random intercepts need about {gb:.1f} GB for their blocks and "
+                              f"{budget.headroom_gb():.1f} GB is free ({budget}); fit with fewer "
+                              "covariates, coarser groupings, or a larger max_memory_gb")
         if self.kind == "tree":
             self._tree_setup()
         for f in self.random:

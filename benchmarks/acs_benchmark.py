@@ -63,6 +63,7 @@ from _harness import (
     run_configs,
     write_machine_info,
 )
+from _settings import LOW_MEMORY
 
 SCRIPT = Path(__file__).resolve()
 SOURCE = DATA_DIR / "acs_2023_5yr.parquet"
@@ -138,7 +139,6 @@ REFERENCE = {"*": "logit-stream", "logit-stream (PUMA fixed effects)": None,
              "fixest (R, PUMA fixed effects)": "logit-stream (PUMA fixed effects)"}
 DEFAULT_SIZES = [10_000, 30_000, 100_000, 300_000, 1_000_000, 3_000_000, 6_000_000, 12_853_377]
 TIMEOUT_S = 1800
-LOW_MEMORY = {"block_mb": 8, "chunk_mb": 8}
 
 
 # --------------------------------------------------------------------------

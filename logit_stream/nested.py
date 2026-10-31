@@ -35,6 +35,7 @@ from dataclasses import replace
 import numba as nb
 import numpy as np
 
+from ._limits import limited
 from .optimize import _GradientDriver
 
 # --------------------------------------------------------------------------
@@ -469,13 +470,16 @@ class _Tree:
 # fitting
 # --------------------------------------------------------------------------
 
+@limited
 def _fit_nested(fml, data, *, case, alt, nests, vcov="iid", cluster=(), weights=None,
                 weights_type="aweights", offset=None, workdir=None, tol=1e-8, maxiter=200,
                 storage="disk", dtype="float64", block_mb=64.0, polars_engine="cpu",
                 keep_intermediates=False, verbose=True, logger=None, log_level=None,
-                device="cpu"):
+                device="cpu", profile=False, chunk_mb=64.0, max_memory_gb=None,
+               memory_reserve=None):
     import polars as pl
     from hdfe_stream.core.report import warn
+    from hdfe_stream.core.resources import MemoryBudget
     from hdfe_stream.core.store import PolarsEngine
     from hdfe_stream.core.utils import as_lazy
     from hdfe_stream.core.workspace import Run
@@ -523,6 +527,13 @@ def _fit_nested(fml, data, *, case, alt, nests, vcov="iid", cluster=(), weights=
     if K == 0:
         raise ValueError(f"{spec.fml}: the nested logit needs covariates")
 
+    if profile:
+        from .profile import profile_model
+        return profile_model("nlogit", spec, lf, data, weights=weights, clusters=clusters,
+                             requests=requests, case=case, storage=storage, dtype=dtype,
+                             block_mb=block_mb, chunk_mb=chunk_mb, offset=offset,
+                             n_lambda=tree.n_lambda, n_alt=len(seen),
+                             budget=MemoryBudget(max_memory_gb, memory_reserve))
     t0 = time.time()
     log(f"nested logit: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)

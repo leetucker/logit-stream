@@ -1,12 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-- Pinned hdfe-stream to ensure compatability with `polars-runtime-64`. Fits that
-  go through hdfe-stream were broken with 64-bit row indices (binary models, and
-  any model with absorbed fixed effects) because of an issue in hdfe-stream
-  0.6.1. The fix is in that library, this library just pins the version and
-  incorporates a regression test.
+- **Fit resources (CPUs and memory) are constrained to your job's limits automatically.** On a
+  cluster (PBS, Slurm, or a container with cgroup limits), importing `logit_stream` caps the threads of
+  Polars, numba, BLAS and pyarrow at the job's CPU allocation, and with Polars 2.x gives Polars a
+  memory budget so its streaming operations spill to disk instead of growing. Caveats: the Polars
+  budget is a target for its buffers, not a hard cap on the process, and Polars 1.x has no such
+  option, so there only the threads are capped. The caps must be in place before Polars is
+  imported: import `logit_stream` first, or call `stream_limits.set_limits()` at the top of the script.
+  With no limit found nothing changes. See "Resource limits and profiling" in the documentation.
+- **`profile=True`: estimate a fit's memory and disk before running it.** On
+  every estimator, profiling returns a `hdfe_stream.Profile` -- the estimated
+  memory and disk, from one scan of the data -- instead of fitting. P comes from
+  the model and the outcome's levels; the information matrix, its per-thread
+  copies, the fixed effect's cross blocks and the clusters' score sums are sized
+  from it. The multinomial logit with several fixed effects (fitted by
+  `fepois_stream` on data expanded J-fold) is profiled as that regression, from
+  counts worked out from one scan of the original data. Not modeled: random
+  intercepts, and the mixed and nested logit's workspaces beyond the per-thread
+  accumulators.
+- **`max_memory_gb` and `memory_reserve`**: the fixed effect's cross-block guard and
+  the random intercepts' guard (both a fixed 8 GB) and CRV3's (25% of physical
+  memory) now ask whether their exact allocation fits in the memory left (the limit
+  less a reserve, less what the process holds). The limit defaults to the job's
+  allocation (cgroup, `STREAM_LIMITS_MEMORY_GB`, or on PBS `qstat`).
+- **`n_threads=`** on every estimator: numba and BLAS threads for one fit,
+  restored afterwards (Polars' pool is fixed at import; see hdfe-stream's
+  "Resource limits and profiling").
+- **`diagnostics["peak_rss_gb"]`** in every fit.
+- Depends on `stream-limits`, and needs hdfe-stream 0.8.0 or later (the `<0.7` upper bound on
+  hdfe-stream is gone).
 
 ## 0.1.0
 

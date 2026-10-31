@@ -38,6 +38,7 @@ import time
 import numba as nb
 import numpy as np
 
+from ._limits import limited
 from .newton import _Driver
 from .optimize import _GradientDriver
 
@@ -388,13 +389,16 @@ class _MixedDriver(_GradientDriver):
 # fitting
 # --------------------------------------------------------------------------
 
+@limited
 def _fit_mixed(fml, data, *, case, panel=None, random, draws=500, halton=True, seed=0,
                drop=100, vcov="iid", workdir=None, tol=1e-8, maxiter=200, switch=np.inf,
                draws_cache_mb=512.0,
                storage="disk", dtype="float64", block_mb=64.0, polars_engine="cpu",
                keep_intermediates=False, verbose=True, logger=None, log_level=None,
-               device="cpu"):
+               device="cpu", profile=False, chunk_mb=64.0, max_memory_gb=None,
+               memory_reserve=None):
     from hdfe_stream.core.report import warn
+    from hdfe_stream.core.resources import MemoryBudget
     from hdfe_stream.core.results_base import vcov_key
     from hdfe_stream.core.store import PolarsEngine
     from hdfe_stream.core.utils import as_lazy
@@ -446,6 +450,13 @@ def _fit_mixed(fml, data, *, case, panel=None, random, draws=500, halton=True, s
             kind[k], ridx[k] = DISTRIBUTIONS[dist], len(rnames)
             rnames.append(nm)
 
+    if profile:
+        from .profile import profile_model
+        return profile_model("mixlogit", spec, lf, data, case=case, panel=panel if own_panel else None,
+                             storage=storage, dtype=dtype, block_mb=block_mb, chunk_mb=chunk_mb,
+                             n_random=len(rnames), draws=int(draws),
+                             draws_cache_mb=draws_cache_mb,
+                             budget=MemoryBudget(max_memory_gb, memory_reserve))
     t0 = time.time()
     log(f"mixed logit: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
