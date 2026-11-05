@@ -37,6 +37,31 @@ from scipy.special import expit, ndtr, ndtri
 # average, and the parameters few enough for a per-thread accumulator each
 SPARSE_DENSITY = 0.5
 SPARSE_MAX_PARAMS = 1200
+# The conditional and fixed-effects logits' numba passes (`_clogit_pass`,
+# `_cfe_units`) split a block's choice sets or units into this many parts per
+# thread, handed out as threads come free (`_parts`), and keep the parts'
+# information accumulators together to at most PARTS_MB (but at least one
+# part per thread). The conditional logit's is used up to CLOGIT_KERNEL_MAX_P
+# parameters: it adds each
+# row into a P x P accumulator per thread, which is fast while that fits in a
+# core's L2 cache (0.5 MB at 256; current cores have 1-2.5 MB) and several
+# times slower once it does not, where BLAS's blocked products are not
+# (measured, 4 threads: 0.17 of the NumPy pass's time at P = 128, 0.43 at
+# 256, 0.7-0.85 at 384-512, 2.3 at 768 with a 2.5 MB L2). Above it the pass
+# is NumPy's (`_Conditional._accumulate_blas`).
+PARTS_PER_THREAD = 4
+PARTS_MB = 64.0
+# the fixed-effects logit's parts take runs of this many consecutive units
+CFE_RUN = 64
+CLOGIT_KERNEL_MAX_P = 256
+
+
+def _parts(n_items: int, P: int) -> int:
+    """How many parts to split `n_items` sets or units into, for a pass
+    whose parts each keep a P x P accumulator (see PARTS_PER_THREAD)."""
+    threads = nb.get_num_threads()
+    cap = max(threads, int(PARTS_MB * 1e6 // (8 * max(P * P, 1))))
+    return max(1, min(n_items, PARTS_PER_THREAD * threads, cap))
 
 
 def _gram(X, v):
@@ -89,6 +114,93 @@ def _mnl_info_sparse(X, P, w, n_threads, out):
                             a_[ra, lo + idx[bb]] += xa * val[bb]
     for t in range(n_threads):
         out += acc[t]
+
+
+@nb.njit(parallel=True, cache=True)
+def _clogit_pass(X, cols, theta, y, w, off, starts, hessian, max_size, ll_t, g_t, H_t):
+    """The conditional logit's log-likelihood, gradient and information over
+    the choice sets of a block, in one pass over its rows: the sets are
+    split into ``len(ll_t)`` parts, and part t's sums are written to
+    ``ll_t[t]``, ``g_t[t]`` and (with `hessian`) ``H_t[t]``, for the caller
+    to add up (`_Conditional.accumulate_full`). `cols` are the columns of
+    `X` in the model; `w` and `off` are empty when there are no weights or
+    offset.
+
+    The only parallel loop is the one over the parts: the accumulators are
+    allocated and summed by the caller, since with `parallel_chunksize`
+    numba would hand out every element of an array operation here as a
+    chunk of its own.
+
+    Per set: p = softmax(eta), the log-likelihood eta_chosen - log sum
+    exp(eta), the gradient sum (y - p) x, and the information
+    sum p (x - xbar)(x - xbar)' with xbar = sum p x (the within-set
+    covariance, centred before the products: the same matrix as
+    sum p x x' - xbar xbar', without the cancellation). Each is weighted by
+    the set's weight. Only the upper triangle of the information is filled."""
+    n_sets = len(starts) - 1
+    P = len(cols)
+    n_parts = len(ll_t)
+    has_w, has_off = len(w) > 0, len(off) > 0
+    step = (n_sets + n_parts - 1) // n_parts
+    for t in nb.prange(n_parts):
+        # local accumulators, copied out at the end: rows of the shared
+        # arrays would share cache lines between threads
+        eta = np.empty(max_size)
+        xs = np.empty((max_size, P))         # the set's rows, read once
+        xbar = np.empty(P)
+        d = np.empty(P)
+        g = np.zeros(P)
+        Ht = np.zeros((P, P) if hessian else (0, 0))
+        llt = 0.0
+        for s in range(t * step, min(n_sets, (t + 1) * step)):
+            a, b = starts[s], starts[s + 1]
+            ws = w[a] if has_w else 1.0
+            m = -np.inf
+            chosen = 0.0
+            for i in range(a, b):
+                e = off[i] if has_off else 0.0
+                for k in range(P):
+                    x = X[i, cols[k]]
+                    xs[i - a, k] = x
+                    e += x * theta[k]
+                eta[i - a] = e
+                if y[i] == 1:
+                    chosen += e
+                if e > m:
+                    m = e
+            S = 0.0
+            for i in range(a, b):
+                eta[i - a] = np.exp(eta[i - a] - m)
+                S += eta[i - a]
+            llt += ws * (chosen - m - np.log(S))
+            for k in range(P):
+                xbar[k] = 0.0
+            for i in range(a, b):
+                p = eta[i - a] / S
+                eta[i - a] = p
+                r = ws * ((1.0 if y[i] == 1 else 0.0) - p)
+                for k in range(P):
+                    x = xs[i - a, k]
+                    g[k] += r * x
+                    xbar[k] += p * x
+            if hessian:
+                for i in range(a, b):
+                    p = ws * eta[i - a]
+                    for k in range(P):
+                        d[k] = xs[i - a, k] - xbar[k]
+                    # the full square (a fixed-length inner loop, which
+                    # vectorizes), though only the upper triangle is used
+                    for k in range(P):
+                        v = p * d[k]
+                        for l in range(P):
+                            Ht[k, l] += v * d[l]
+        ll_t[t] = llt
+        for k in range(P):
+            g_t[t, k] = g[k]
+        if hessian:
+            for k in range(P):
+                for l in range(P):
+                    H_t[t, k, l] = Ht[k, l]
 
 
 def _bincount(idx, weights, n):
@@ -530,6 +642,43 @@ class _Conditional(_Model):
         return e / np.repeat(S, sizes), m, S
 
     def accumulate(self, theta, X, y, w, starts, hessian, offset=None):
+        return self.accumulate_full(theta, X, np.arange(X.shape[1]), y, w, starts, hessian,
+                                    offset)
+
+    def accumulate_full(self, theta, X, cols, y, w, starts, hessian, offset=None):
+        """`accumulate` on the columns `cols` of `X`: a whole block, by
+        numba's pass, which holds no row-sized temporaries and reads the
+        columns in place rather than copying them; above
+        CLOGIT_KERNEL_MAX_P parameters, by NumPy's."""
+        P = len(cols)
+        if P > CLOGIT_KERNEL_MAX_P:
+            Xc = X if P == X.shape[1] and np.array_equal(cols, np.arange(P)) else X[:, cols]
+            return self._accumulate_blas(theta, Xc, y, w, starts, hessian, offset)
+        empty = np.empty(0)
+        starts = np.asarray(starts, np.int64)
+        # parts handed out one at a time as threads come free, so that a
+        # thread the machine slows (another process, the store's reader, a
+        # slower core) does not hold up the rest; their accumulators are
+        # capped together, at one part per thread
+        n_parts = _parts(len(starts) - 1, P)
+        ll_t, g_t = np.zeros(n_parts), np.zeros((n_parts, P))
+        H_t = np.zeros((n_parts, P, P) if hessian else (n_parts, 0, 0))
+        with nb.parallel_chunksize(1):
+            _clogit_pass(
+                np.ascontiguousarray(X, np.float64), np.asarray(cols, np.int64),
+                np.ascontiguousarray(theta, np.float64), y,
+                empty if w is None else np.ascontiguousarray(w, np.float64),
+                empty if offset is None else np.ascontiguousarray(offset, np.float64),
+                starts, bool(hessian), int(np.diff(starts).max()) if len(starts) > 1 else 1,
+                ll_t, g_t, H_t)
+        ll, g, H = ll_t.sum(), g_t.sum(axis=0), H_t.sum(axis=0)
+        if not hessian:
+            return float(ll), g, None
+        return float(ll), g, np.triu(H) + np.triu(H, 1).T
+
+    def _accumulate_blas(self, theta, X, y, w, starts, hessian, offset=None):
+        """`accumulate` by NumPy array operations, the information by BLAS's
+        Gram products: for a wide design (`CLOGIT_KERNEL_MAX_P`)."""
         st = starts[:-1]
         eta = X @ theta
         if offset is not None:
@@ -560,7 +709,7 @@ class _Conditional(_Model):
 
 # ------------------------------------------------------------------ conditional FE logit
 @nb.njit(parallel=True, cache=True)
-def _cfe_units(X, eta, y, w, starts, hessian, n_threads, ll_u, g_u, out):
+def _cfe_units(X, eta, y, w, starts, hessian, ll_u, g_u, acc):
     """Chamberlain's conditional likelihood, unit by unit (the rows of unit u
     are starts[u]:starts[u+1]): with k the unit's number of 1s among its T
     rows, log P(y | k) = sum y eta - log e_k(exp(eta)), e_k the elementary
@@ -573,68 +722,81 @@ def _cfe_units(X, eta, y, w, starts, hessian, n_threads, ll_u, g_u, out):
     unit's largest, and a unit with k > T / 2 is fitted as its complement
     (1 - y, -x, -eta), so that k <= T / 2. Units with k = 0 or k = T carry no
     information and are skipped. Writes each unit's (weighted) log-likelihood
-    and gradient; the information is summed into `out` over `n_threads`
-    blocks of units."""
+    and gradient; the information is summed over ``len(acc)`` parts of the
+    units, part t's into ``acc[t]``, for the caller to add up.
+
+    A unit's work grows with T k P^2, so units differ in cost: the parts are
+    more than the threads, handed out as threads come free (`_CFELogit._units`
+    runs this under ``parallel_chunksize(1)``), and each takes every
+    ``len(acc)``-th run of CFE_RUN units, so that each has a mix of short and
+    long panels. The only parallel loop is the
+    one over the parts, so the accumulators are allocated and summed by the
+    caller (numba would otherwise hand out every element of an array
+    operation here as a chunk of its own)."""
     U, P = len(starts) - 1, X.shape[1]
-    acc = np.zeros((n_threads, P, P))
-    step = (U + n_threads - 1) // n_threads
-    for th in nb.prange(n_threads):
-        # (a thread's own accumulator, copied out at the end: the threads'
+    n_parts = len(acc)
+    for th in nb.prange(n_parts):
+        # (a part's own accumulator, copied out at the end: the parts'
         # slices of `acc` are too close together to add into unit by unit)
         a_ = np.zeros((P, P))
-        for u in range(th * step, min(U, (th + 1) * step)):
-            r0, r1 = starts[u], starts[u + 1]
-            T = r1 - r0
-            k = 0
-            for r in range(r0, r1):
-                k += 1 if y[r] > 0 else 0
-            ll_u[u] = 0.0
-            for p in range(P):
-                g_u[u, p] = 0.0
-            if k == 0 or k == T:
-                continue
-            s = 1.0
-            if 2 * k > T:
-                s, k = -1.0, T - k
-            c = -np.inf
-            for r in range(r0, r1):
-                c = max(c, s * eta[r])
-            e = np.zeros(k + 1)
-            G = np.zeros((k + 1, P))
-            Hm = np.zeros((k + 1, P, P)) if hessian else np.zeros((1, 1, 1))
-            e[0] = 1.0
-            obs = 0.0
-            for r in range(r0, r1):
-                z = np.exp(s * eta[r] - c)
-                yr = (y[r] > 0) if s > 0 else (y[r] <= 0)
-                if yr:
-                    obs += s * eta[r]
-                    for p in range(P):
-                        g_u[u, p] += s * X[r, p]
-                for j in range(k, 0, -1):
-                    if hessian:
-                        for p in range(P):
-                            xp = s * X[r, p]
-                            for q in range(P):
-                                xq = s * X[r, q]
-                                Hm[j, p, q] += z * (Hm[j - 1, p, q] + xp * G[j - 1, q]
-                                                    + G[j - 1, p] * xq + xp * xq * e[j - 1])
-                    for p in range(P):
-                        G[j, p] += z * (G[j - 1, p] + s * X[r, p] * e[j - 1])
-                    e[j] += z * e[j - 1]
-            wu = w[r0]
-            ll_u[u] = wu * (obs - np.log(e[k]) - k * c)
-            for p in range(P):
-                m = G[k, p] / e[k]
-                g_u[u, p] = wu * (g_u[u, p] - m)
-            if hessian:
+        # runs of CFE_RUN units, every n_parts-th run: data in order of panel
+        # length (a cohort, an entry date) would otherwise put the longest,
+        # costliest units together in the last parts, while single units
+        # dealt out would scatter the reads
+        for u0 in range(th * CFE_RUN, U, n_parts * CFE_RUN):
+            for u in range(u0, min(U, u0 + CFE_RUN)):
+                r0, r1 = starts[u], starts[u + 1]
+                T = r1 - r0
+                k = 0
+                for r in range(r0, r1):
+                    k += 1 if y[r] > 0 else 0
+                ll_u[u] = 0.0
                 for p in range(P):
-                    mp = G[k, p] / e[k]
-                    for q in range(P):
-                        a_[p, q] += wu * (Hm[k, p, q] / e[k] - mp * G[k, q] / e[k])
-        acc[th] = a_
-    for th in range(n_threads):
-        out += acc[th]
+                    g_u[u, p] = 0.0
+                if k == 0 or k == T:
+                    continue
+                s = 1.0
+                if 2 * k > T:
+                    s, k = -1.0, T - k
+                c = -np.inf
+                for r in range(r0, r1):
+                    c = max(c, s * eta[r])
+                e = np.zeros(k + 1)
+                G = np.zeros((k + 1, P))
+                Hm = np.zeros((k + 1, P, P)) if hessian else np.zeros((1, 1, 1))
+                e[0] = 1.0
+                obs = 0.0
+                for r in range(r0, r1):
+                    z = np.exp(s * eta[r] - c)
+                    yr = (y[r] > 0) if s > 0 else (y[r] <= 0)
+                    if yr:
+                        obs += s * eta[r]
+                        for p in range(P):
+                            g_u[u, p] += s * X[r, p]
+                    for j in range(k, 0, -1):
+                        if hessian:
+                            for p in range(P):
+                                xp = s * X[r, p]
+                                for q in range(P):
+                                    xq = s * X[r, q]
+                                    Hm[j, p, q] += z * (Hm[j - 1, p, q] + xp * G[j - 1, q]
+                                                        + G[j - 1, p] * xq + xp * xq * e[j - 1])
+                        for p in range(P):
+                            G[j, p] += z * (G[j - 1, p] + s * X[r, p] * e[j - 1])
+                        e[j] += z * e[j - 1]
+                wu = w[r0]
+                ll_u[u] = wu * (obs - np.log(e[k]) - k * c)
+                for p in range(P):
+                    m = G[k, p] / e[k]
+                    g_u[u, p] = wu * (g_u[u, p] - m)
+                if hessian:
+                    for p in range(P):
+                        mp = G[k, p] / e[k]
+                        for q in range(P):
+                            a_[p, q] += wu * (Hm[k, p, q] / e[k] - mp * G[k, q] / e[k])
+        for p in range(P):
+            for q in range(P):
+                acc[th, p, q] = a_[p, q]
 
 
 class _CFELogit(_Model):
@@ -673,12 +835,12 @@ class _CFELogit(_Model):
             eta = eta + offset
         U, P = len(starts) - 1, X.shape[1]
         ll_u, g_u = np.empty(U), np.empty((U, P))
-        H = np.zeros((P, P))
+        acc = np.zeros((_parts(U, P), P, P))
         ww = np.ones(len(y)) if w is None else np.ascontiguousarray(w, dtype=np.float64)
-        _cfe_units(np.ascontiguousarray(X), np.ascontiguousarray(eta), y, ww,
-                   np.ascontiguousarray(starts, dtype=np.int64), hessian,
-                   nb.get_num_threads(), ll_u, g_u, H)
-        return ll_u, g_u, H
+        with nb.parallel_chunksize(1):
+            _cfe_units(np.ascontiguousarray(X), np.ascontiguousarray(eta), y, ww,
+                       np.ascontiguousarray(starts, dtype=np.int64), hessian, ll_u, g_u, acc)
+        return ll_u, g_u, acc.sum(axis=0)
 
     def accumulate(self, theta, X, y, w, starts, hessian, offset=None):
         ll_u, g_u, H = self._units(theta, X, y, w, starts, hessian, offset)

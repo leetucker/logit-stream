@@ -91,6 +91,28 @@ def test_choice_set_validation(choice_data):
         clogit_stream("chosen ~ cost", w, case="case", weights="w", verbose=False)
 
 
+def test_sets_checked_and_weighted_block_by_block(choice_data):
+    """The sets are checked and their weights summed a block at a time: the
+    error counts every bad set, in any block, and the analytic weights,
+    rescaled once the sum is known, give the same fit however the rows are
+    divided into blocks and wherever the blocks are kept."""
+    two = choice_data.with_columns(
+        pl.when(pl.col("case") % 100 == 0).then(1).otherwise(pl.col("chosen"))
+        .cast(pl.Int8).alias("chosen"))
+    n_bad = two.group_by("case").agg(pl.col("chosen").sum()).filter(pl.col("chosen") != 1).height
+    with pytest.raises(ValueError, match=f"{n_bad:,} of 3,000 do not"):
+        clogit_stream("chosen ~ cost", two, case="case", verbose=False, block_mb=0.02)
+    w = choice_data.with_columns((pl.col("case") % 7 + 1).cast(pl.Float64).alias("w"))
+    kw = dict(case="case", weights="w", verbose=False, tol=1e-14)
+    a = clogit_stream(FML, w, **kw)
+    for opts in (dict(block_mb=0.02), dict(storage="memory", block_mb=0.02)):
+        b = clogit_stream(FML, w.sample(fraction=1.0, shuffle=True, seed=3), **kw, **opts)
+        assert b.diagnostics["store"]["blocks"] > 5
+        np.testing.assert_allclose(b.beta, a.beta, rtol=1e-10)
+        np.testing.assert_allclose(b.se, a.se, rtol=1e-10)
+        assert b.loglik == pytest.approx(a.loglik, rel=1e-12)
+
+
 def test_weights_are_per_choice_set(choice_data):
     d = choice_data.filter(pl.col("case") < 1500)
     w = d.with_columns((pl.col("case") % 3 + 1).cast(pl.Float64).alias("w"))

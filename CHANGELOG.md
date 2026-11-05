@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+- **The conditional logit is 2.3-2.8 times faster.** Its log-likelihood, gradient and information
+  are computed in one parallel numba pass over each block's choice sets, giving the same
+  estimates (4 million sets: 13 s, now 5 s; 8 million: 26 s, now 9-12 s). Designs of more than
+  256 parameters keep the previous BLAS-based pass, which is faster there.
+- **The fixed-effects logit (`cfelogit_stream`) balances work across threads better.** Panels
+  are dealt out in small pieces to more parts than threads, so a run of long panels no longer
+  leaves threads idle: 0.55 of the time on panels sorted by length, 0.8-1.0 on shuffled
+  ones, with the same results.
+- **Lower memory for conditional, mixed and fixed-effects logit.** Choice sets are now checked
+  and counted a block at a time instead of from a table of every set, so memory no longer grows
+  with the number of sets (8 million sets: peak 1.71 GB down to 1.33 GB). Same errors, same
+  results.
+- **Memory tests.** `pytest -m resource` fits the multinomial, ordered and conditional logit
+  on data larger than a fixed memory limit; CI runs them on Linux, macOS and Windows. The
+  default `pytest` run leaves them out.
+- Requires hdfe-stream 0.9.0 or later, which reads Parquet in less memory.
+
 ## 0.2.0
 
 - **Fit resources (CPUs and memory) are constrained to your job's limits automatically.** On a

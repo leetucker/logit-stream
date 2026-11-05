@@ -6,6 +6,9 @@ import pytest
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# resource_runner and the `resource` marker (tests/test_resources.py)
+pytest_plugins = ["stream_limits.pytest_plugin"]
+
 
 def _mnl_draw(rng, E):
     P = np.exp(E - E.max(axis=1, keepdims=True))

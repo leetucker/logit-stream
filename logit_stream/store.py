@@ -138,21 +138,39 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
     cols = list(dict.fromkeys([*roots, *([weights] if weights else []), *raw]))
     rows = block_rows(block_mb, K)
     design_path = run_dir / "sample.parquet"
+    log("pass 0: writing the sample")
+    write_sample(engine, lf, usable, cols, design_path, rows, ROW)
     # A choice set with an incomplete alternative is dropped whole (Stata's
     # cmclogit default): fitted on its other alternatives, it would be a
-    # different choice set. altwise=True keeps them.
+    # different choice set. altwise=True keeps them. Whether there is one is
+    # the source's rows with a choice set against the sample's (a count of
+    # the key columns); which sets, and a second copy of the sample without
+    # them, only when there is. (Filtering the source for the incomplete
+    # rows, as this did, holds memory in proportion to the source in Polars'
+    # streaming engine even when none match: 0.3 GB on 21.6 million rows.)
     incomplete = None
     if kind in ("clogit", "mixlogit") and not altwise:
         skey = list(dict.fromkeys([*(panel or []), *case]))
-        bad = engine.collect(lf.filter(~usable).select(skey).drop_nulls().unique(),
-                             "incomplete choice sets")
-        if bad.height:
-            incomplete = (bad, skey)
-            warn(f"{spec.fml}: {bad.height:,} choice sets dropped because some of their "
-                 "alternatives have missing values (altwise=True keeps their complete "
-                 "alternatives)")
-    log("pass 0: writing the sample")
-    write_sample(engine, lf, usable, cols, design_path, rows, ROW, drop=incomplete)
+        keyed = engine.collect(
+            lf.filter(pl.all_horizontal([pl.col(c).is_not_null() for c in skey]))
+            .select(pl.len()), "rows with a choice set").item()
+        kept = engine.collect(pl.scan_parquet(design_path).select(pl.len()),
+                              "sample rows").item()
+        if keyed > kept:
+            bad = engine.collect(lf.filter(~usable).select(skey).drop_nulls().unique(),
+                                 "incomplete choice sets")
+            if bad.height:
+                incomplete = (bad, skey)
+                warn(f"{spec.fml}: {bad.height:,} choice sets dropped because some of their "
+                     "alternatives have missing values (altwise=True keeps their complete "
+                     "alternatives)")
+                every = run_dir / "sample_all.parquet"
+                design_path.rename(every)
+                engine.sink(pl.scan_parquet(every).join(bad.lazy(), on=skey, how="anti",
+                                                        maintain_order="left"),
+                            str(design_path), "pass 0 sample (complete sets)",
+                            row_group_size=min(rows, 250_000))
+                every.unlink()
     evaluated = [pl.col(ROW), yexpr.alias(Y), *xexprs, *wexpr,
                  *([offset.alias(OFF)] if offset is not None else []),
                  *[pl.col(c) for c in raw if c not in (Y, W)]]
@@ -271,6 +289,8 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
                    "pidx": pidx,
                    "row": frame[ROW].to_numpy().astype(np.int64)})
 
+    convert.store = store                       # for _case_order's weight rescaling
+
     n_cases, wcases, n_panels = 0, 0.0, 0
     units = {}
     log(f"pass 0: writing {n_obs:,} rows as blocks of {rows:,}"
@@ -280,7 +300,8 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
         n_cases, wcases, n_panels = _case_order(engine, design, design_path, case, weights,
                                                 spec, rows, convert, run_dir, log, panel,
                                                 ccols, wscale if weights_type != "fweights"
-                                                else None, kind=kind, info=units)
+                                                else None, kind=kind, info=units,
+                                                evaluated=evaluated)
     else:
         for frame in iter_batches(design_path, rows):
             convert(frame)
@@ -294,7 +315,8 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
 
 
 def _case_order(engine, design, design_path, case, weights, spec, rows, convert, run_dir,
-                log, panel=None, cluster_cols=(), wscale=None, kind="clogit", info=None):
+                log, panel=None, cluster_cols=(), wscale=None, kind="clogit", info=None,
+                evaluated=()):
     """Write the conditional logit's blocks so that each holds whole choice
     sets, each a run of consecutive rows; return the number of sets, their
     summed weight and the number of panels.
@@ -308,7 +330,16 @@ def _case_order(engine, design, design_path, case, weights, spec, rows, convert,
 
     Long-format choice data usually arrives grouped by choice set already,
     and then the rows are written in their order; otherwise they are sorted
-    by set in buckets (`hdfe_stream.core.store.iter_groups`)."""
+    by set in buckets (`hdfe_stream.core.store.iter_groups`).
+
+    The sets are checked (one chosen alternative; weights and clusters
+    constant within each) and summed (their weights; the fixed-effects
+    logit's units) a block at a time, as the blocks are written: a summary
+    of every set at once would hold a row per set in memory. Analytic
+    weights, which are rescaled to average 1 over the sets, are therefore
+    written as they are and rescaled once the sum is known
+    (`_rescale_weights`). `evaluated` are the sample's expressions, as
+    `convert` evaluates them, for the outcome and the weights."""
     skey = list(dict.fromkeys([*(panel or []), *case]))
     unit = list(panel) if panel else skey
 
@@ -316,62 +347,123 @@ def _case_order(engine, design, design_path, case, weights, spec, rows, convert,
         return pl.any_horizontal([(pl.col(c) != pl.col(c).shift()).fill_null(True)
                                   for c in cols])
 
+    def key(cols):
+        # one column's distinct values are counted with little memory; a
+        # struct's with more, but still far less than a row per set
+        return pl.col(cols[0]) if len(cols) == 1 else pl.struct(cols)
+
     changed, uchanged = runs_of(skey), runs_of(unit)
-    per = engine.collect(design.group_by(skey).agg(
-        pl.col(Y).sum().alias("chosen"), pl.len().alias("size"),
-        *([(pl.col(W).max() - pl.col(W).min()).alias("wspread"),
-           pl.col(W).first().alias("wcase")] if weights else []),
-        *[pl.col(c).n_unique().alias(f"__ls_nu_{i}") for i, c in enumerate(cluster_cols)]),
-        "choice sets")
-    n_cases = per.height
-    wcases = float(per["wcase"].sum()) if weights else float(n_cases)
-    if weights and wscale is not None:          # analytic weights: average 1 over the sets
-        wscale[0] = n_cases / wcases
-        wcases = float(n_cases)
-    n_panels = per.select(panel).unique().height if panel else 0
+    n_cases = None
+    if not panel and len(skey) == 1:
+        # sorted by set, as long-format choice data usually are: each set's
+        # rows are then consecutive, and the sets are the runs of the key,
+        # counted without a table of the keys (about 30 bytes a set)
+        k = pl.col(skey[0])
+        order = engine.collect(design.select(
+            runs_of(skey).sum().alias("runs"),
+            (k < k.shift()).fill_null(False).any().alias("down")), "choice set order")
+        if not order["down"].item():
+            n_cases = int(order["runs"].item())
+    if n_cases is None:
+        counts = engine.collect(design.select(
+            key(skey).n_unique().alias("sets"),
+            *([key(list(panel)).n_unique().alias("panels")] if panel else [])), "choice sets")
+        n_cases = int(counts["sets"].item())
+    n_panels = int(counts["panels"].item()) if panel else 0
+
+    need = {Y, *([W] if weights else [])}
+    ev = [e for e in evaluated if e.meta.output_name() in need]
+    run = "__ls_set"
+    agg = [pl.col(Y).sum().alias("chosen"), pl.len().alias("size"),
+           *([(pl.col(W).max() - pl.col(W).min()).alias("wspread"),
+              pl.col(W).first().alias("wcase")] if weights else []),
+           *[pl.col(c).n_unique().alias(f"__ls_nu_{i}") for i, c in enumerate(cluster_cols)]]
+    wsum_sets = 0.0
+    bad_sets, bad_eg = 0, []
+    wspread = False
+    spread = [[0, []] for _ in cluster_cols]
+    cfe = {"units": 0, "rows": 0, "wunits": 0.0, "loglik_null": 0.0}
     if kind == "cfelogit":
-        # units whose outcome never varies carry no information (their rows stay,
-        # and the likelihood skips them); the null, every arrangement of a unit's
-        # 1s equally likely, is -sum log C(T, k)
         from scipy.special import gammaln
-        T, k = per["size"].to_numpy().astype(float), per["chosen"].to_numpy()
-        live = (k > 0) & (k < T)
-        wu = per["wcase"].to_numpy() if weights else np.ones(len(T))
-        if weights and wscale is not None:      # average 1 over the informative units
-            wscale[0] = live.sum() / wu[live].sum()
-        wu = wu * (wscale[0] if weights and wscale is not None else 1.0)
-        lc = gammaln(T + 1) - gammaln(k + 1) - gammaln(T - k + 1)
-        info.update(units=int(live.sum()), dropped=int((~live).sum()),
-                    rows=int(T[live].sum()), wunits=float(wu[live].sum()),
-                    loglik_null=float(-(lc[live] * wu[live]).sum()))
-    bad = per.filter(pl.col("chosen") != 1) if kind != "cfelogit" else per.head(0)
-    if bad.height:
-        raise ValueError(
-            f"{spec.fml}: every choice set must have exactly one chosen alternative "
-            f"(outcome 1); {bad.height:,} of {n_cases:,} do not (e.g. "
-            f"{bad.select(skey).head(3).to_dicts()}). Rows dropped for missing values can "
-            "remove a set's chosen alternative.")
-    if weights and per["wspread"].max() > 0:
-        raise ValueError("weights must be constant within each choice set (a choice set is "
-                         "one observation)")
-    for i, c in enumerate(cluster_cols):
-        spread = per.filter(pl.col(f"__ls_nu_{i}") > 1)
-        if spread.height:
-            raise ValueError(f"cluster variable {c!r} must be constant within each choice set "
-                             f"(a choice set is one observation); {spread.height:,} sets "
-                             f"have more than one value (e.g. "
-                             f"{spread.select(skey).head(3).to_dicts()})")
-    del per
 
     # blocks of whole units (sets, or panels with their sets consecutive)
     for body in iter_groups(engine, design_path, unit, rows, run_dir,
                             n_panels if panel else n_cases, [*skey, ROW],
                             also=[(skey, n_cases)] if panel else (), log=log):
-        starts = np.append(np.flatnonzero(body.select(changed.alias("b"))["b"].to_numpy()),
-                           body.height).astype(np.int64)
+        b = body.select(changed.alias("b"))["b"].to_numpy()
+        starts = np.append(np.flatnonzero(b), body.height).astype(np.int64)
+        # this block's sets, in their order
+        per = (body.select(*skey, *[pl.col(c) for c in cluster_cols if c not in skey], *ev)
+               .with_columns(pl.Series(run, np.cumsum(b)))
+               .group_by(run, maintain_order=True)
+               .agg(*[pl.col(c).first() for c in skey], *agg))
+        if weights:
+            wsum_sets += float(per["wcase"].sum())
+            wspread = wspread or per["wspread"].max() > 0
+        if kind == "cfelogit":
+            # units whose outcome never varies carry no information (their rows
+            # stay, and the likelihood skips them); the null, every arrangement
+            # of a unit's 1s equally likely, is -sum log C(T, k)
+            T, k = per["size"].to_numpy().astype(float), per["chosen"].to_numpy()
+            live = (k > 0) & (k < T)
+            wu = per["wcase"].to_numpy() if weights else np.ones(len(T))
+            lc = gammaln(T + 1) - gammaln(k + 1) - gammaln(T - k + 1)
+            cfe["units"] += int(live.sum())
+            cfe["rows"] += int(T[live].sum())
+            cfe["wunits"] += float(wu[live].sum())
+            cfe["loglik_null"] -= float((lc[live] * wu[live]).sum())
+        else:
+            bad = per.filter(pl.col("chosen") != 1)
+            bad_sets += bad.height
+            if len(bad_eg) < 3:
+                bad_eg += bad.select(skey).head(3 - len(bad_eg)).to_dicts()
+        for i in range(len(cluster_cols)):
+            sp = per.filter(pl.col(f"__ls_nu_{i}") > 1)
+            spread[i][0] += sp.height
+            if len(spread[i][1]) < 3:
+                spread[i][1] += sp.select(skey).head(3 - len(spread[i][1])).to_dicts()
+        del per
         pstarts = None
         if panel:
             pstarts = np.append(np.flatnonzero(body.select(uchanged.alias("b"))["b"]
                                                .to_numpy()), body.height).astype(np.int64)
         convert(body, starts, pstarts)
+
+    if bad_sets:
+        raise ValueError(
+            f"{spec.fml}: every choice set must have exactly one chosen alternative "
+            f"(outcome 1); {bad_sets:,} of {n_cases:,} do not (e.g. {bad_eg}). Rows dropped "
+            "for missing values can remove a set's chosen alternative.")
+    if wspread:
+        raise ValueError("weights must be constant within each choice set (a choice set is "
+                         "one observation)")
+    for c, (n_spread, eg) in zip(cluster_cols, spread):
+        if n_spread:
+            raise ValueError(f"cluster variable {c!r} must be constant within each choice set "
+                             f"(a choice set is one observation); {n_spread:,} sets "
+                             f"have more than one value (e.g. {eg})")
+
+    wcases = wsum_sets if weights else float(n_cases)
+    if weights and wscale is not None:          # analytic weights: average 1 over the sets
+        wscale[0] = n_cases / wcases
+        wcases = float(n_cases)
+    if kind == "cfelogit":
+        scale = 1.0
+        if weights and wscale is not None:      # average 1 over the informative units
+            scale = wscale[0] = cfe["units"] / cfe["wunits"]
+        info.update(units=cfe["units"], dropped=n_cases - cfe["units"], rows=cfe["rows"],
+                    wunits=cfe["wunits"] * scale, loglik_null=cfe["loglik_null"] * scale)
+    if weights and wscale is not None and wscale[0] != 1.0:
+        _rescale_weights(convert.store, wscale[0])
     return n_cases, wcases, n_panels
+
+
+def _rescale_weights(store, factor: float) -> None:
+    """Multiply the weights (field ``w``) of every block of `store` by
+    `factor`, in memory or in their files."""
+    for blk in store.blocks:
+        if store.in_memory:
+            if "w" in blk.arrays:
+                blk.arrays["w"] = blk.arrays["w"] * factor
+        elif "w" in blk.files:
+            np.save(blk.files["w"], np.load(blk.files["w"]) * factor)

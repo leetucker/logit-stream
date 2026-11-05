@@ -129,7 +129,19 @@ class _Driver:
         m = self.model
         ll, g, H = 0.0, np.zeros(m.P), (np.zeros((m.P, m.P)) if hessian else None)
         rows = self._rows()
+        full = getattr(m, "accumulate_full", None)
         for blk in self.store:
+            if full is not None and firth_A is None:
+                # a numba pass over the whole block, on its columns in place
+                l, gg, hh = full(theta, blk["X"], m.cols, blk["y"], blk.get("w"),
+                                 blk.get("starts"), hessian, offset=blk.get("off"))
+                if not np.isfinite(l):
+                    return -np.inf, None, None
+                ll += l
+                g += gg
+                if hessian:
+                    H += hh
+                continue
             for ch in _chunks(blk, rows):
                 X = _design(ch, m.cols, self.K0)
                 l, gg, hh = m.accumulate(theta, X, ch["y"], ch.get("w"), ch.get("starts"),

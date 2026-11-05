@@ -29,6 +29,24 @@ def panel():
     return _panel()
 
 
+def test_analytic_weights_scale_free(panel):
+    """Analytic weights average 1 over the informative units, so scaling
+    them changes nothing; and the units' sums, taken a block at a time, do
+    not depend on how the rows are divided into blocks."""
+    w = panel.with_columns(w=(pl.col("i") % 4 + 1).cast(pl.Float64))
+    w = w.with_columns(w10=10 * pl.col("w"))
+    a = cfelogit_stream("y ~ x1 + x2 | i", w, weights="w", verbose=False, tol=1e-14)
+    b = cfelogit_stream("y ~ x1 + x2 | i", w, weights="w10", verbose=False, tol=1e-14)
+    c = cfelogit_stream("y ~ x1 + x2 | i", w, weights="w", verbose=False, tol=1e-14,
+                        block_mb=0.005)
+    assert c.diagnostics["store"]["blocks"] > 5
+    for r in (b, c):
+        np.testing.assert_allclose(r.beta, a.beta, rtol=1e-10)
+        np.testing.assert_allclose(r.se, a.se, rtol=1e-9)
+        assert r.loglik == pytest.approx(a.loglik, rel=1e-12)
+        assert r.loglik_null == pytest.approx(a.loglik_null, rel=1e-12)
+
+
 def test_matches_statsmodels(panel):
     cm = pytest.importorskip("statsmodels.discrete.conditional_models")
     f = cfelogit_stream("y ~ x1 + x2 | i", panel, verbose=False, tol=1e-14)
