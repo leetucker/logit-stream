@@ -31,8 +31,10 @@ Windows. On macOS it measures resident memory, which counts the mapped
 scratch files, so there the limit is a looser safety net.
 On Windows, private memory is committed memory: a buffer or an allocator
 segment counts in full once allocated, touched or not (an hdfe-stream logit
-fit had 1.61 GB committed while 1.14 GB was resident). So Windows also gets
-the looser limit, until its own CI figures set a tighter one.
+fit had 1.61 GB committed while 1.14 GB was resident). Measured in CI
+(GitHub's windows-latest, 2 threads): multinomial 1.70 GB, ordered 1.76 GB,
+conditional 1.79 GB; the limit there is 2.1 GB, which a fit holding the data
+(at least 2.7 GB) would still exceed.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ pytestmark = pytest.mark.resource
 N_PEOPLE = 20_000_000
 N_CASES = 8_000_000                              # 21.6 million rows
 BUDGET_GB = 1.5                                  # the fit's max_memory_gb
-LIMIT_GB = {"darwin": 2.6, "win32": 2.6}.get(sys.platform, 1.6)
+LIMIT_GB = {"darwin": 2.6, "win32": 2.1}.get(sys.platform, 1.6)
 X = "age10 + female + log_income + owner + urban"
 XS = X.split(" + ")
 
