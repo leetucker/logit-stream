@@ -4,8 +4,8 @@
  "memory_gb": 30.8,
  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
  "python": "3.12.3",
- "logit-stream": "0.1.0",
- "hdfe-stream": "0.6.0",
+ "logit-stream": "0.3.0",
+ "hdfe-stream": "0.9.0",
  "scikit-learn": "1.9.1",
  "statsmodels": "0.15.0",
  "xlogit": "0.2.7",
@@ -19,25 +19,28 @@
  "scipy": "1.18.1",
  "pandas": "3.1.0",
  "cupy-cuda13x": null,
- "measured": "2026-10-29",
+ "measured": "2026-11-05",
  "ec2": {
-  "run": "2026-10-29T0326Z_c8id.4xlarge_spot_binary-kernel",
+  "run": "2026-11-05T2321Z_c8id.4xlarge_spot_logit-0.3.0-rerun2",
   "instance_type": "c8id.4xlarge",
   "market": "spot",
   "region": "us-east-2",
   "az": "us-east-2c",
   "memory_max": "96% of memory (systemd MemoryMax)",
-  "data_disk": "local NVMe (/dev/nvme1n1)"
+  "data_disk": "local NVMe (/dev/nvme1n1)",
+  "baseline": "2026-10-29T0326Z_c8id.4xlarge_spot_binary-kernel",
+  "baseline_measured": "2026-10-29",
+  "note": "logit-stream rows in acs, choice, mixed and panel (logit-stream, PUMA fixed effects and low memory series; not the random-intercept series) were re-measured on this run with logit-stream 0.3.0 and hdfe-stream 0.9.0; all other rows, including every other library, are from the baseline run (logit-stream 0.1.0, hdfe-stream 0.6.0). The GPU results are from 0.1.0."
  },
  "code": {
   "logit-stream": {
-   "commit": "d8c46eba6df99752c06b742ff6c302bf0855e77c",
-   "describe": "d8c46eb-dirty",
-   "dirty": true
+   "commit": "0cb26abbee534b25134b901cda67a50a84e94bdb",
+   "describe": "0cb26ab",
+   "dirty": false
   },
   "hdfe-stream": {
-   "commit": "f77d2cf34982f5f679c9e98b647e2fc571f91dc5",
-   "describe": "f77d2cf",
+   "commit": "d933f774f2ad5ec59adb44646d3a4de8791f0ed9",
+   "describe": "d933f77",
    "dirty": false
   }
  }

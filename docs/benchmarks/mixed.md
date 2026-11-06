@@ -62,10 +62,10 @@ respondents at a time, up to a million respondents (27 million rows of
 alternatives), with 500 draws per respondent.
 
 - **logit-stream was the fastest at every size**, the survey itself
-  included: 1.8 s at 752 respondents, against 5.9 s for jaxlogit, 8.0 s for
-  xlogit, 9.0 s for Biogeme and 20 s for logitr; at 10,000 respondents, 8.0 s
+  included: 1.7 s at 752 respondents, against 5.9 s for jaxlogit, 8.0 s for
+  xlogit, 9.0 s for Biogeme and 20 s for logitr; at 10,000 respondents, 7.8 s
   against 32 s (jaxlogit), 109 s (xlogit) and 155 s (logitr).
-- **Its memory stayed between 0.5 and 2.3 GB** up to a million respondents.
+- **Its memory stayed between 0.6 and 2.5 GB** up to a million respondents.
   jaxlogit's grew by about 1.9 GB per thousand respondents (19.5 GB at
   10,000) and ran out of memory at 30,000; logitr's, 13.7 GB at 10,000, did
   the same; xlogit's grew by about 0.55 GB per thousand, and it ran out at
@@ -121,24 +121,24 @@ The numbers behind the figures. A dash means the library was not run at that siz
 
 | respondents | logit-stream | xlogit (L-BFGS-B) | jaxlogit | Biogeme | logitr (R) |
 |---:|---:|---:|---:|---:|---:|
-| 752 | 1.8 | 8.0 | 5.9 | 9.0 | 19.7 |
-| 3,000 | 3.7 | 31.7 | 11.0 | 17.4 | 90.9 |
-| 10,000 | 8.0 | 109 | 31.5 | out of memory | did not converge |
-| 30,000 | 27.5 | 339 | out of memory | out of memory | out of memory |
-| 100,000 | 70.0 | out of memory | – | out of memory | – |
-| 300,000 | 214 | – | – | out of memory | – |
-| 1,000,000 | 702 | – | – | out of memory | – |
+| 752 | 1.7 | 8.0 | 5.9 | 9.0 | 19.7 |
+| 3,000 | 3.8 | 31.7 | 11.0 | 17.4 | 90.9 |
+| 10,000 | 7.8 | 109 | 31.5 | out of memory | did not converge |
+| 30,000 | 26.7 | 339 | out of memory | out of memory | out of memory |
+| 100,000 | 68.4 | out of memory | – | out of memory | – |
+| 300,000 | 208 | – | – | out of memory | – |
+| 1,000,000 | 692 | – | – | out of memory | – |
 
 **Peak memory (GB)**
 
 | respondents | logit-stream | xlogit (L-BFGS-B) | jaxlogit | Biogeme | logitr (R) |
 |---:|---:|---:|---:|---:|---:|
-| 752 | 0.56 | 0.56 | 2.77 | 1.79 | 1.39 |
-| 3,000 | 0.50 | 1.73 | 6.43 | 5.02 | 4.26 |
-| 10,000 | 0.59 | 5.43 | 19.53 | out of memory | did not converge |
-| 30,000 | 0.88 | 16.00 | out of memory | out of memory | out of memory |
-| 100,000 | 1.39 | out of memory | – | out of memory | – |
-| 300,000 | 1.34 | – | – | out of memory | – |
-| 1,000,000 | 2.26 | – | – | out of memory | – |
+| 752 | 0.57 | 0.56 | 2.77 | 1.79 | 1.39 |
+| 3,000 | 0.61 | 1.73 | 6.43 | 5.02 | 4.26 |
+| 10,000 | 0.71 | 5.43 | 19.53 | out of memory | did not converge |
+| 30,000 | 1.05 | 16.00 | out of memory | out of memory | out of memory |
+| 100,000 | 1.40 | out of memory | – | out of memory | – |
+| 300,000 | 1.51 | – | – | out of memory | – |
+| 1,000,000 | 2.45 | – | – | out of memory | – |
 
 <!-- /table -->

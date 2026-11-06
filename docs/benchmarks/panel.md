@@ -25,26 +25,26 @@ At 10 million rows (2 million units):
 
 | model | logit-stream | others |
 |---|---|---|
-| conditional | 6.0 s, 1.2 GB | `clogit` 55 s, 5.4 GB; statsmodels 590 s, 6.2 GB |
-| fixed effects | 5.8 s, 1.3 GB | fixest 8.1 s, 3.0 GB; pyfixest 35 s, 4.1 GB |
-| bias-corrected | 8.1 s, 1.4 GB | alpaca 67 s, 4.0 GB |
+| conditional | 3.4 s, 1.2 GB | `clogit` 55 s, 5.4 GB; statsmodels 590 s, 6.2 GB |
+| fixed effects | 5.5 s, 1.4 GB | fixest 8.1 s, 3.0 GB; pyfixest 35 s, 4.1 GB |
+| bias-corrected | 8.0 s, 1.4 GB | alpaca 67 s, 4.0 GB |
 
 - **The conditional logit** is faster than `clogit` from about a million rows
-  (1.7 s against 5.8 s), and statsmodels', which takes ten minutes at 10
-  million rows, is 100 times slower. At 100,000 rows `clogit` is as fast
-  (1.1 s against 1.2 s).
+  (1.4 s against 5.8 s), and statsmodels', which takes ten minutes at 10
+  million rows, is 170 times slower. At 100,000 rows `clogit` is as fast
+  (1.1 s each).
 - **The fixed-effects logit:** fixest is faster up to about 3 million rows
-  (0.43 s against 1.9 s at 100,000; 2.5 s against 4.2 s at 3 million),
+  (0.43 s against 1.2 s at 100,000; 2.5 s against 4.1 s at 3 million),
   logit-stream above, with less than half of the memory at 10 million. The
   fixed effects are absorbed, so memory does not grow with the number of
   units. pyfixest takes the same estimates as fixest, to within 6e-8 of
   logit-stream's, and is slower than both from a million rows.
-- **The bias correction** costs logit-stream about 40% more than the
+- **The bias correction** costs logit-stream about 45% more than the
   uncorrected fit at 10 million rows. alpaca is faster below a million rows
-  (0.70 s against 1.4 s at 100,000) and 8 times slower at 10 million. The
+  (0.70 s against 1.2 s at 100,000) and 8 times slower at 10 million. The
   estimates agree to within 3e-4.
 - Memory grows slowly in logit-stream (0.6 to 1.4 GB over the range) and
-  its disk use, 3 to 410 MB, is what it writes of the rows it re-reads.
+  its disk use, 3 to 380 MB, is what it writes of the rows it re-reads.
 - The other libraries' coefficients agree with logit-stream's to within 6e-8
   (fixest, pyfixest), 3e-4 (alpaca), 5e-15 (`clogit`) and 2e-4 (statsmodels).
 
@@ -87,19 +87,19 @@ The numbers behind the figures.
 
 | rows | logit-stream | statsmodels | clogit (R survival) |
 |---:|---:|---:|---:|
-| 100,000 | 1.2 | 5.9 | 1.1 |
-| 1,000,000 | 1.7 | 63.3 | 5.8 |
-| 3,000,000 | 2.9 | 176 | 14.7 |
-| 10,000,000 | 6.0 | 590 | 54.7 |
+| 100,000 | 1.1 | 5.9 | 1.1 |
+| 1,000,000 | 1.4 | 63.3 | 5.8 |
+| 3,000,000 | 1.9 | 176 | 14.7 |
+| 10,000,000 | 3.4 | 590 | 54.7 |
 
 **Peak memory (GB)**
 
 | rows | logit-stream | statsmodels | clogit (R survival) |
 |---:|---:|---:|---:|
-| 100,000 | 0.56 | 0.27 | 0.36 |
-| 1,000,000 | 0.70 | 0.82 | 0.83 |
-| 3,000,000 | 1.01 | 2.02 | 2.11 |
-| 10,000,000 | 1.20 | 6.25 | 5.41 |
+| 100,000 | 0.57 | 0.27 | 0.36 |
+| 1,000,000 | 0.87 | 0.82 | 0.83 |
+| 3,000,000 | 1.22 | 2.02 | 2.11 |
+| 10,000,000 | 1.24 | 6.25 | 5.41 |
 
 <!-- /table -->
 
@@ -111,19 +111,19 @@ The numbers behind the figures.
 
 | rows | logit-stream | fixest (R) | pyfixest |
 |---:|---:|---:|---:|
-| 100,000 | 1.9 | 0.43 | 1.6 |
-| 1,000,000 | 1.8 | 1.1 | 4.3 |
-| 3,000,000 | 4.2 | 2.5 | 10.9 |
-| 10,000,000 | 5.8 | 8.1 | 35.3 |
+| 100,000 | 1.2 | 0.43 | 1.6 |
+| 1,000,000 | 1.6 | 1.1 | 4.3 |
+| 3,000,000 | 4.1 | 2.5 | 10.9 |
+| 10,000,000 | 5.5 | 8.1 | 35.3 |
 
 **Peak memory (GB)**
 
 | rows | logit-stream | fixest (R) | pyfixest |
 |---:|---:|---:|---:|
 | 100,000 | 0.62 | 0.27 | 0.39 |
-| 1,000,000 | 0.87 | 0.57 | 0.91 |
-| 3,000,000 | 1.07 | 1.20 | 1.48 |
-| 10,000,000 | 1.33 | 3.03 | 4.11 |
+| 1,000,000 | 0.99 | 0.57 | 0.91 |
+| 3,000,000 | 1.20 | 1.20 | 1.48 |
+| 10,000,000 | 1.42 | 3.03 | 4.11 |
 
 <!-- /table -->
 
@@ -135,18 +135,18 @@ The numbers behind the figures.
 
 | rows | logit-stream | alpaca (R) |
 |---:|---:|---:|
-| 100,000 | 1.4 | 0.70 |
-| 1,000,000 | 2.0 | 5.6 |
-| 3,000,000 | 3.2 | 16.1 |
-| 10,000,000 | 8.1 | 66.7 |
+| 100,000 | 1.2 | 0.70 |
+| 1,000,000 | 1.8 | 5.6 |
+| 3,000,000 | 3.1 | 16.1 |
+| 10,000,000 | 8.0 | 66.7 |
 
 **Peak memory (GB)**
 
 | rows | logit-stream | alpaca (R) |
 |---:|---:|---:|
-| 100,000 | 0.64 | 0.27 |
-| 1,000,000 | 0.83 | 0.68 |
-| 3,000,000 | 1.12 | 1.35 |
-| 10,000,000 | 1.38 | 3.98 |
+| 100,000 | 0.63 | 0.27 |
+| 1,000,000 | 1.04 | 0.68 |
+| 3,000,000 | 1.21 | 1.35 |
+| 10,000,000 | 1.42 | 3.98 |
 
 <!-- /table -->
