@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- **Works with pyfixest 0.60 and 0.70.** Formulas are read through hdfe-stream's own formula
+  parser, so either pyfixest version can be installed.
+- Requires hdfe-stream 0.10.0 or later.
+
 ## 0.3.0
 
 - **The conditional logit is 2.3-2.8 times faster.** Its log-likelihood, gradient and information

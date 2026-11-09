@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "logit-stream"
-version = "0.3.0"
+version = "0.3.1"
 description = "Out-of-core logit models by streamed Newton: binary, multinomial, ordered and conditional logit, with absorbed fixed effects"
 readme = "README.md"
 license = "MIT"
@@ -30,7 +30,7 @@ requires-python = ">=3.10"
 dependencies = [
     # the streaming engine, the result base classes and the formula front end;
     # binary logit is hdfe-stream's feglm_stream
-    "hdfe-stream[formula]>=0.9.0",   # 0.9.0: lower-memory Parquet batch reads (iter_groups)
+    "hdfe-stream[formula]>=0.10.0",  # 0.10.0: pyfixest 0.70 support, parse_formula
     "stream-limits>=0.1.1",     # thread and memory limits for jobs on a scheduler (0.1.1: Windows memory)
     "polars>=1.37,!=1.41.*",
     "numpy>=1.24",

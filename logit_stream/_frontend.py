@@ -19,7 +19,7 @@ from hdfe_stream.core.formula import (
     categorical_vars,
     compile_design,
     numeric_expr,
-    pyfixest_formula_api,
+    parse_formula,
 )
 
 
@@ -52,27 +52,26 @@ def _plan(fml: str, lf: pl.LazyFrame, intercept: bool, collect) -> list[_Spec]:
     categorical coding is still reduced rank, as with it.
     `collect(lf, what)` runs a query (so that the GPU engine applies).
     """
-    Formula, _ = pyfixest_formula_api()
     schema = lf.collect_schema()
-    specs = Formula.parse(fml)
+    specs = parse_formula(fml)
     cats = set()
     for s in specs:
-        if s.first_stage is not None:
-            raise ValueError(f"{s.formula}: IV formulas are not available for logit models")
-        cats |= categorical_vars(s.second_stage.split("~", 1)[1], schema)
+        if s.iv is not None:
+            raise ValueError(f"{s.key}: IV formulas are not available for logit models")
+        cats |= categorical_vars(s.rhs, schema)
     levels = {}
     for v in sorted(cats):
         u = collect(lf.select(pl.col(v).drop_nulls().unique().sort()), f"levels of {v}")
         levels[v] = u[v].to_list()
     out = []
     for s in specs:
-        dep, rhs = (t.strip() for t in s.second_stage.split("~", 1))
-        fe = tuple(parse_fe(s.fixed_effects))
+        dep, rhs = s.dep, s.rhs
+        fe = tuple(parse_fe(s.fe))
         for d in fe:
             if "[" in d:
-                raise ValueError(f"{s.formula}: varying slopes are not available for logit models")
+                raise ValueError(f"{s.key}: varying slopes are not available for logit models")
         _, cols = compile_design(dep, rhs, schema, levels, intercept=intercept and not fe)
         if not intercept:
             cols = [(nm, ex) for nm, ex in cols if nm != "Intercept"]
-        out.append(_Spec(fml=s.formula, depvar=dep, y=_outcome_expr(dep, schema), x=cols, fe=fe))
+        out.append(_Spec(fml=s.key, depvar=dep, y=_outcome_expr(dep, schema), x=cols, fe=fe))
     return out
