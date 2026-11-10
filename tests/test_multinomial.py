@@ -216,9 +216,11 @@ def test_reports(fit):
 def test_multiple_estimation(mnl_data):
     r = mlogit_stream("y ~ csw(x1, x2)", mnl_data, verbose=False)
     assert isinstance(r, LogitMulti) and len(r) == 2
-    assert [m.fml for m in r] == ["y ~ x1", "y ~ x1 + x2"]
+    # pyfixest 0.70 spells the intercept out ("y ~ 1 + x1"); 0.60 does not.
+    names = [m.fml for m in r]
+    assert [n.replace("~ 1 + ", "~ ") for n in names] == ["y ~ x1", "y ~ x1 + x2"]
     assert r.tidy().columns[0] == "fml"
-    assert set(r.summary_dict()) == {"y ~ x1", "y ~ x1 + x2"}
+    assert set(r.summary_dict()) == set(names)
 
 
 def test_no_intercept(mnl_data):
