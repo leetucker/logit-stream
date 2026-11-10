@@ -436,12 +436,20 @@ class MultinomialLogitResult(LogitResult):
         non-base level."""
         xs = self._spec["xcols"]
         B = self._B()
+        free = self._spec.get("free")
+        if free is not None:                # an own covariate's other equations
+            B = np.where(free.T, B, np.nan)
         return pl.DataFrame({"Coefficient": xs,
                              **{_level_name(lv): B[:, j] for j, lv in enumerate(self.levels[1:])}})
 
     def _B(self):
         J1, K = len(self.levels) - 1, len(self._spec["xcols"])
-        return np.asarray(self.beta).reshape(J1, K).T
+        free = self._spec.get("free")
+        if free is None:
+            return np.asarray(self.beta).reshape(J1, K).T
+        B = np.zeros((J1, K))
+        B[free] = self.beta
+        return B.T
 
     def predict(self, newdata: Any = None, type: str = "response",
                 prefix: str | None = None) -> pl.LazyFrame:

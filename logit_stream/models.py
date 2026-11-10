@@ -117,6 +117,56 @@ def _mnl_info_sparse(X, P, w, n_threads, out):
 
 
 @nb.njit(parallel=True, cache=True)
+def _mnl_info_sparse_own(X, P, w, own, n_threads, out):
+    """`_mnl_info_sparse` for a design with own covariates: `own[k]` is the
+    equation (0-based, among the non-base levels) that column k enters, or
+    -1 for a column in every equation. A pair of columns contributes to
+    block (j, l) only if each is in its equation, so the off-diagonal
+    entries of the own columns are left zero (the caller takes the free
+    parameters' rows and columns)."""
+    n, K = X.shape
+    J1 = P.shape[1]
+    Pn = J1 * K
+    acc = np.zeros((n_threads, Pn, Pn))
+    step = (n + n_threads - 1) // n_threads
+    for t in nb.prange(n_threads):
+        idx = np.empty(K, np.int64)
+        val = np.empty(K)
+        a_ = acc[t]
+        for i in range(t * step, min(n, (t + 1) * step)):
+            cnt = 0
+            for k in range(K):
+                x = X[i, k]
+                if x != 0.0:
+                    idx[cnt] = k
+                    val[cnt] = x
+                    cnt += 1
+            wi = w[i]
+            for j in range(J1):
+                pj = P[i, j] * wi
+                if pj == 0.0:
+                    continue
+                for l in range(j, J1):
+                    v = pj * ((1.0 if j == l else 0.0) - P[i, l])
+                    if v == 0.0:
+                        continue
+                    jo, lo = j * K, l * K
+                    for aa in range(cnt):
+                        oa = own[idx[aa]]
+                        if oa >= 0 and oa != j:
+                            continue
+                        ra = jo + idx[aa]
+                        xa = v * val[aa]
+                        for bb in range(cnt):
+                            ob = own[idx[bb]]
+                            if ob >= 0 and ob != l:
+                                continue
+                            a_[ra, lo + idx[bb]] += xa * val[bb]
+    for t in range(n_threads):
+        out += acc[t]
+
+
+@nb.njit(parallel=True, cache=True)
 def _clogit_pass(X, cols, theta, y, w, off, starts, hessian, max_size, ll_t, g_t, H_t):
     """The conditional logit's log-likelihood, gradient and information over
     the choice sets of a block, in one pass over its rows: the sets are
@@ -262,24 +312,76 @@ class _Model:
 class _Multinomial(_Model):
     kind = "mlogit"
 
-    def __init__(self, xnames, K, levels, intercept):
+    def __init__(self, xnames, K, levels, intercept, own=None):
         super().__init__(xnames, K)
         self.levels = list(levels)
         self.J = len(levels)
         self.intercept = intercept          # index of the Intercept column, or None
+        # own covariates: {design column: the equation (0-based, among the
+        # non-base levels) it enters}. Every other column enters all of them.
+        # The own columns come after the others in the design.
+        self.own = dict(own or {})
+        self._free_cache = None
+
+    # own covariates ----------------------------------------------------------
+    def free(self):
+        """Which of the J - 1 x K coefficients (equation by current column)
+        are estimated: all, but for an own covariate's other equations."""
+        if self._free_cache is None or self._free_cache.shape[1] != self.K:
+            M = np.ones((self.J - 1, self.K), bool)
+            for p, c in enumerate(self.cols):
+                e = self.own.get(int(c))
+                if e is not None:
+                    M[:, p] = False
+                    M[e, p] = True
+            self._free_cache = M
+        return self._free_cache
+
+    def param_cols(self):
+        """The design column (an index into the original columns) of each
+        parameter, in the order of `names`."""
+        if not self.own:
+            return np.tile(self.cols, self.J - 1)
+        return np.broadcast_to(self.cols, (self.J - 1, self.K))[self.free()]
+
+    def _unpack(self, theta):
+        if not self.own:
+            return theta.reshape(self.J - 1, self.K)
+        B = np.zeros((self.J - 1, self.K))
+        B[self.free()] = theta
+        return B
+
+    def keep_columns(self, H, collinear):
+        """Which design columns to keep, from the first step's information:
+        each equation's block (the columns it has) is checked for collinear
+        columns by `collinear`, and a column is dropped if any equation
+        finds it so."""
+        M = self.free()
+        keep = np.ones(self.K, bool)
+        off = 0
+        for e in range(self.J - 1):
+            pos = np.flatnonzero(M[e])
+            n = len(pos)
+            keep[pos] &= collinear(H[off:off + n, off:off + n])
+            off += n
+        return keep
 
     @property
     def P(self):
-        return self.K * (self.J - 1)
+        return int(self.free().sum()) if self.own else self.K * (self.J - 1)
 
     def names(self):
+        if self.own:
+            M = self.free()
+            return [f"{lv}:{self.xnames[c]}" for e, lv in enumerate(self.levels[1:])
+                    for p, c in enumerate(self.cols) if M[e, p]]
         return [f"{lv}:{self.xnames[c]}" for lv in self.levels[1:] for c in self.cols]
 
     def penalized(self):
         pen = np.ones((self.J - 1, self.K), bool)
         if self.intercept is not None and self.intercept in self.cols:
             pen[:, int(np.flatnonzero(self.cols == self.intercept)[0])] = False
-        return pen.ravel()
+        return pen[self.free()] if self.own else pen.ravel()
 
     def start(self, counts, fe=False):
         """Zero slopes, and the intercepts that give each level its sample
@@ -288,12 +390,19 @@ class _Multinomial(_Model):
         B = np.zeros((self.J - 1, self.K))
         if self.intercept is not None and not fe:
             B[:, self.intercept] = np.log(counts[1:] / counts[0])
-        return B.ravel()
+        return B[self.free()] if self.own else B.ravel()
 
     def x_block(self, H):
         return H[:self.K, :self.K], []
 
     def drop(self, keep):
+        if self.own:
+            M = self.free()
+            idx = np.flatnonzero((M & keep[None, :])[M])
+            self.cols = self.cols[keep]
+            if self.intercept is not None and self.intercept not in self.cols:
+                self.intercept = None
+            return idx
         idx = np.flatnonzero(np.tile(keep, self.J - 1))
         self.cols = self.cols[keep]
         if self.intercept is not None and self.intercept not in self.cols:
@@ -304,7 +413,7 @@ class _Multinomial(_Model):
         return self.K * (self.J - 1) if scores else self.K + self.J
 
     def eta(self, theta, X):
-        return X @ theta.reshape(self.J - 1, self.K).T
+        return X @ self._unpack(theta).T
 
     @staticmethod
     def probs(E):
@@ -331,9 +440,12 @@ class _Multinomial(_Model):
         R[idx, y[idx] - 1] += 1.0
         if w is not None:
             R *= w[:, None]
-        g = (X.T @ R).T.ravel()
+        g = (X.T @ R).T
+        g = g[self.free()] if self.own else g.ravel()
         if not hessian:
             return ll, g, None
+        if self.own:
+            return ll, g, self._information_own(X, P, ex, den, w)
         if self.sparse(X):
             H = np.zeros((J1 * K, J1 * K))
             _mnl_info_sparse(np.ascontiguousarray(X), np.ascontiguousarray(P),
@@ -357,6 +469,55 @@ class _Multinomial(_Model):
                 H[sj, sk] = Hjk
                 H[sk, sj] = Hjk
         return ll, g, H
+
+    def _information_own(self, X, P, ex, den, w):
+        """The information with own covariates: the free parameters' rows and
+        columns only. The common columns are a prefix of the design (the own
+        ones follow), so block (j, l) is the Gram product of the common
+        columns, plus the thin products with the equations' own columns."""
+        J1, K = self.J - 1, self.K
+        M = self.free()
+        if self.sparse(X):
+            own = np.full(K, -1, np.int64)
+            for p, c in enumerate(self.cols):
+                own[p] = self.own.get(int(c), -1)
+            H = np.zeros((J1 * K, J1 * K))
+            _mnl_info_sparse_own(np.ascontiguousarray(X), np.ascontiguousarray(P),
+                                 np.ones(len(X)) if w is None else w, own,
+                                 nb.get_num_threads(), H)
+            for j in range(J1):
+                for k in range(j + 1, J1):
+                    H[k * K:(k + 1) * K, j * K:(j + 1) * K] = \
+                        H[j * K:(j + 1) * K, k * K:(k + 1) * K].T
+            fi = np.flatnonzero(M.ravel())
+            return H[np.ix_(fi, fi)]
+        nc = int(sum(int(c) not in self.own for c in self.cols))
+        Xc = X[:, :nc]
+        opos = [np.flatnonzero(M[e, nc:]) + nc for e in range(J1)]
+        size = [nc + len(o) for o in opos]
+        off = np.r_[0, np.cumsum(size)]
+        H = np.zeros((off[-1], off[-1]))
+        Pw = P if w is None else P * w[:, None]
+        Xo = [X[:, o] for o in opos]
+        for j in range(J1):
+            for k in range(j, J1):
+                if j == k:
+                    v, sgn = Pw[:, j] * ((den - ex[:, j]) / den), 1.0
+                else:
+                    v, sgn = Pw[:, j] * P[:, k], -1.0
+                blk = np.zeros((size[j], size[k]))
+                if nc:
+                    blk[:nc, :nc] = sgn * _gram(Xc, v)
+                if len(opos[k]) and nc:
+                    blk[:nc, nc:] = sgn * (Xc.T @ (Xo[k] * v[:, None]))
+                if len(opos[j]) and nc:
+                    blk[nc:, :nc] = sgn * ((Xo[j] * v[:, None]).T @ Xc)
+                if len(opos[j]) and len(opos[k]):
+                    blk[nc:, nc:] = sgn * ((Xo[j] * v[:, None]).T @ Xo[k])
+                H[off[j]:off[j + 1], off[k]:off[k + 1]] = blk
+                if k != j:
+                    H[off[k]:off[k + 1], off[j]:off[j + 1]] = blk.T
+        return H
 
     def firth_adjustment(self, theta, X, w, A):
         """A chunk's part of Firth's adjustment to the score, the gradient of
@@ -399,6 +560,9 @@ class _Multinomial(_Model):
         R = -ex / den[:, None]
         idx = np.flatnonzero(y > 0)
         R[idx, y[idx] - 1] += 1.0
+        if self.own:
+            M = self.free()
+            return np.hstack([R[:, [e]] * X[:, M[e]] for e in range(self.J - 1)])
         return (R[:, :, None] * X[:, None, :]).reshape(len(y), -1)
 
 

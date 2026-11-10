@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`mlogit_stream(own_covariates=...)`: covariates that enter only their own level's equation.**
+  For example, each group's baseline share can predict that group alone, leaving out the other
+  groups' shares. This drops the off-diagonal coefficients, which are often poorly determined
+  where the groups are segregated, and fits fewer parameters.
+
 ## 0.3.1
 
 - **Works with pyfixest 0.60 and 0.70.** Formulas are read through hdfe-stream's own formula

@@ -110,7 +110,11 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
-         max_memory_gb: float | None = None, memory_reserve: float | None = None):
+         max_memory_gb: float | None = None, memory_reserve: float | None = None,
+         own_covariates: dict | None = None):
+    if own_covariates is not None:
+        own_covariates = _check_own(kind, own_covariates, random=random, firth=firth,
+                                    profile=profile, device=device, poisson=poisson_options)
     if poisson_options is not None and kind != "mlogit":
         raise ValueError("poisson_options= is for mlogit_stream with several fixed effects")
     if weights_type not in ("aweights", "fweights"):
@@ -189,6 +193,11 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                   collect=lambda q, what: engine.collect(q, what))
     results = []
     for spec in specs:
+        if own_covariates is not None:
+            if spec.fe:
+                raise ValueError(f"{spec.fml}: own_covariates= is not available with an "
+                                 "absorbed fixed effect")
+            spec = _with_own(spec, own_covariates, lf)
         if kind == "cfelogit":
             # the formula's one fixed effect is the unit, conditioned out
             if len(spec.fe) != 1:
@@ -267,7 +276,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
                                 firth=firth, offset=offset, start=start, device=device,
-                                link=link, altwise=altwise, budget=budget))
+                                link=link, altwise=altwise, budget=budget,
+                                own_covariates=own_covariates))
     if profile:
         from .profile import combine_profiles
         return combine_profiles(results)
@@ -278,7 +288,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
              random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
-             device=None, link="logit", altwise=False, budget=None):
+             device=None, link="logit", altwise=False, budget=None, own_covariates=None):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -295,7 +305,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         K = len(xnames)
         if kind == "mlogit":
             ic = xnames.index("Intercept") if "Intercept" in xnames else None
-            model = _Multinomial(xnames, K, p0.levels, ic)
+            model = _Multinomial(xnames, K, p0.levels, ic,
+                                 own=_resolve_own(own_covariates, p0.levels, xnames, spec.fml))
         elif kind == "ologit":
             model = _Ordered(xnames, K, p0.levels, link=link)
         elif kind == "cfelogit":
@@ -478,6 +489,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                  "incomplete": p0.incomplete}
         if fe is not None:
             rspec.update(fe.result_spec(fit.theta))
+        if kind == "mlogit" and model.own:
+            rspec["free"] = model.free().copy()
         if kind == "mlogit":
             res = MultinomialLogitResult(**common, levels=list(p0.levels), base=p0.levels[0],
                                          _spec=rspec)
@@ -497,6 +510,72 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
     finally:
         if not keep_intermediates:
             run.cleanup()
+
+
+def _own_columns(own_covariates):
+    """{level: [columns]} from `own_covariates`: a column or a list of them
+    for each level."""
+    return {lv: ([c] if isinstance(c, str) else list(c)) for lv, c in own_covariates.items()}
+
+
+def _check_own(kind, own_covariates, *, random, firth, profile, device, poisson):
+    if kind != "mlogit":
+        raise ValueError("own_covariates= is for mlogit_stream")
+    if not isinstance(own_covariates, dict) or not own_covariates:
+        raise ValueError("own_covariates= is a dict {outcome level: column, or list of "
+                         "columns}, e.g. {'Black': 'share_black', 'Asian': 'share_asian'}")
+    own = _own_columns(own_covariates)
+    flat = [c for cs in own.values() for c in cs]
+    if not all(isinstance(c, str) for c in flat) or not flat:
+        raise ValueError("own_covariates= names columns by their names")
+    if len(set(flat)) < len(flat):
+        raise ValueError("own_covariates= gives a column to more than one level (each level's "
+                         "own covariates are its own columns)")
+    for name, bad in (("random=", random is not None), ("firth=", firth),
+                      ("profile=", profile), ("device='cuda'", device not in (None, "cpu")),
+                      ("poisson_options=", poisson is not None)):
+        if bad:
+            raise ValueError(f"own_covariates= and {name} cannot be combined")
+    return own
+
+
+def _with_own(spec, own, lf):
+    """`spec` with the own-covariate columns added to its design, after the
+    formula's (so the formula's terms are a prefix)."""
+    have = {nm for nm, _ in spec.x}
+    schema = lf.collect_schema()
+    extra = []
+    for cs in own.values():
+        for c in cs:
+            if c not in schema:
+                raise ValueError(f"{spec.fml}: own_covariates= names {c!r}, which is not a "
+                                 "column of the data")
+            if c in have:
+                raise ValueError(f"{spec.fml}: {c!r} is both in the formula (where it enters "
+                                 "every level's equation) and in own_covariates=")
+            extra.append((c, pl.col(c).cast(pl.Float64)))
+    return replace(spec, x=list(spec.x) + extra)
+
+
+def _resolve_own(own, levels, xnames, fml):
+    """{design column: equation index (0-based among the non-base levels)}
+    from `own_covariates` ({level: [columns]}), matching the keys to the
+    outcome's levels (by value, else by string)."""
+    if own is None:
+        return {}
+    out = {}
+    for lv, cs in own.items():
+        hit = [i for i, v in enumerate(levels) if v == lv] or \
+              [i for i, v in enumerate(levels) if str(v) == str(lv)]
+        if not hit:
+            raise ValueError(f"{fml}: own_covariates= names the level {lv!r}, and the outcome's "
+                             f"levels are {list(levels)}")
+        if hit[0] == 0:
+            raise ValueError(f"{fml}: own_covariates= names the base level {levels[0]!r}, which "
+                             "has no equation (its coefficients are zero); name the others")
+        for c in cs:
+            out[xnames.index(c)] = hit[0] - 1
+    return out
 
 
 def _warm_start(theta0, start, model, fml):
@@ -614,9 +693,10 @@ def _separation_warning(spec, model, beta, se, fit, p0, logger):
     cols = list(model.cols)
     K = len(cols)
     flagged = []
+    pcols = model.param_cols() if model.kind == "mlogit" else None
     for i, nm in enumerate(names):
         if model.kind == "mlogit":
-            c = cols[i % K]
+            c = pcols[i]
         elif i < K:
             c = cols[i]
         else:

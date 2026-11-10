@@ -326,9 +326,12 @@ class _Driver:
                                      "log-likelihood")
         # collinearity, from the first step's information (net of the fixed
         # effects, if any)
-        A, prot = m.x_block(H if self.fe is None else self.fe.reduced(H))
-        ref = None if self.fe is None else np.diag(m.x_block(H.tt)[0])
-        keep = self.collinear(A, len(prot), ref=ref)
+        if getattr(m, "own", None):
+            keep = m.keep_columns(H, lambda A: self.collinear(A))
+        else:
+            A, prot = m.x_block(H if self.fe is None else self.fe.reduced(H))
+            ref = None if self.fe is None else np.diag(m.x_block(H.tt)[0])
+            keep = self.collinear(A, len(prot), ref=ref)
         dropped = []
         if not keep.all():
             dropped = [m.xnames[c] for c, k in zip(m.cols, keep) if not k]

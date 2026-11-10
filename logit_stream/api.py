@@ -340,6 +340,17 @@ mlogit_stream.__doc__ = """Out-of-core multinomial logit by streamed Newton.
     levels : sequence, optional
         The outcome's levels in the order wanted, base first. Default: the
         distinct values, sorted.
+    own_covariates : dict, optional
+        Covariates that enter only one level's equation: ``{level: column}``
+        (or a list of columns), such as each group's baseline share
+        predicting that group alone, ``{"Black": "share_black", "Asian":
+        "share_asian"}``. A column named here is not a coefficient in the
+        other levels' equations, so ``k - 1`` shares add ``k - 1``
+        parameters rather than ``(k - 1)^2``. Name the non-base levels; the
+        columns must not also be in the formula. The coefficients are named
+        ``"<level>:<column>"``, and `predict` takes the columns from the new
+        data. Not available with fixed or random effects, ``firth=``,
+        ``profile=`` or ``device="cuda"``.
     poisson_options : dict, optional
         With several fixed effects: further options of hdfe-stream's
         `fepois_stream` (``solver``, ``precond``, ``max_memory_gb``,
