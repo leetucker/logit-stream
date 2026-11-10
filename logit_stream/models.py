@@ -492,31 +492,46 @@ class _Multinomial(_Model):
             fi = np.flatnonzero(M.ravel())
             return H[np.ix_(fi, fi)]
         nc = int(sum(int(c) not in self.own for c in self.cols))
-        Xc = X[:, :nc]
-        opos = [np.flatnonzero(M[e, nc:]) + nc for e in range(J1)]
+        Xc = np.ascontiguousarray(X[:, :nc])
+        Xo = np.ascontiguousarray(X[:, nc:])
+        opos = [np.flatnonzero(M[e, nc:]) for e in range(J1)]       # into Xo's columns
         size = [nc + len(o) for o in opos]
         off = np.r_[0, np.cumsum(size)]
         H = np.zeros((off[-1], off[-1]))
         Pw = P if w is None else P * w[:, None]
-        Xo = [X[:, o] for o in opos]
-        for j in range(J1):
-            for k in range(j, J1):
-                if j == k:
-                    v, sgn = Pw[:, j] * ((den - ex[:, j]) / den), 1.0
-                else:
-                    v, sgn = Pw[:, j] * P[:, k], -1.0
-                blk = np.zeros((size[j], size[k]))
+        one_minus = (den[:, None] - ex) / den[:, None]              # 1 - p_j, without cancellation
+        # the common columns' blocks: X_c' diag(v_jk) X_c, v_jk = w p_j (1[j = k] - p_k)
+        if nc:
+            for j in range(J1):
+                for k in range(j, J1):
+                    v = Pw[:, j] * one_minus[:, j] if j == k else Pw[:, j] * P[:, k]
+                    G = _gram(Xc, v) * (1.0 if j == k else -1.0)
+                    H[off[j]:off[j] + nc, off[k]:off[k] + nc] = G
+                    if k != j:
+                        H[off[k]:off[k] + nc, off[j]:off[j] + nc] = G.T
+        # own column b (of equation k) against the common columns and the other own
+        # columns, for every equation j at once: the weights v_jk of all j form one
+        # n x (J-1) matrix, so each own column costs two thin products
+        eq_of = M[:, nc:].argmax(axis=0) if Xo.shape[1] else np.zeros(0, int)
+        pos_of = np.empty(Xo.shape[1], np.int64)           # an own column's parameter index
+        for e in range(J1):
+            pos_of[opos[e]] = off[e] + nc + np.arange(len(opos[e]))
+        for k in range(J1):
+            if not len(opos[k]):
+                continue
+            Vk = -Pw * P[:, [k]]
+            Vk[:, k] = Pw[:, k] * one_minus[:, k]
+            for b in opos[k]:
+                Vb = Vk * Xo[:, [b]]
+                pb = pos_of[b]
                 if nc:
-                    blk[:nc, :nc] = sgn * _gram(Xc, v)
-                if len(opos[k]) and nc:
-                    blk[:nc, nc:] = sgn * (Xc.T @ (Xo[k] * v[:, None]))
-                if len(opos[j]) and nc:
-                    blk[nc:, :nc] = sgn * ((Xo[j] * v[:, None]).T @ Xc)
-                if len(opos[j]) and len(opos[k]):
-                    blk[nc:, nc:] = sgn * ((Xo[j] * v[:, None]).T @ Xo[k])
-                H[off[j]:off[j + 1], off[k]:off[k + 1]] = blk
-                if k != j:
-                    H[off[k]:off[k + 1], off[j]:off[j + 1]] = blk.T
+                    T = Xc.T @ Vb                           # nc x (J-1): column j is block (j, k)
+                    for j in range(J1):
+                        H[off[j]:off[j] + nc, pb] = T[:, j]
+                        H[pb, off[j]:off[j] + nc] = T[:, j]
+                R = Vb.T @ Xo                               # (J-1) x Mo, own against own
+                for a in range(Xo.shape[1]):
+                    H[pos_of[a], pb] = R[eq_of[a], a]
         return H
 
     def firth_adjustment(self, theta, X, w, A):
