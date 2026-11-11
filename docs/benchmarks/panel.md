@@ -25,25 +25,26 @@ At 10 million rows (2 million units):
 | model | logit-stream | others |
 |---|---|---|
 | conditional | 3.3 s, 1.2 GB | `clogit` 55 s, 5.4 GB; statsmodels 590 s, 6.2 GB |
-| fixed effects | 5.5 s, 1.4 GB | fixest 8.1 s, 3.0 GB; pyfixest 9.2 s, 3.9 GB |
+| fixed effects | 4.1 s, 1.4 GB | fixest 8.1 s, 3.0 GB; pyfixest 9.2 s, 3.9 GB |
 | bias-corrected | 7.8 s, 1.4 GB | alpaca 67 s, 4.0 GB |
 
 - **The conditional logit** is faster than `clogit` from about a million rows
   (1.2 s against 5.8 s), and statsmodels', which takes ten minutes at 10
   million rows, is 180 times slower. At 100,000 rows `clogit` is about as fast
   (1.1 s against 0.9 s).
-- **The fixed-effects logit:** fixest is faster up to about 3 million rows
-  (0.43 s against 0.91 s at 100,000; 2.5 s against 4.1 s at 3 million),
-  logit-stream above, with less than half of the memory at 10 million. The
+- **The fixed-effects logit:** fixest is faster up to about a million rows
+  (0.43 s against 1.0 s at 100,000; 1.1 s against 1.3 s at 1 million),
+  logit-stream above (1.9 s against 2.5 s at 3 million), with less than half of
+  the memory at 10 million. The
   fixed effects are absorbed, so memory does not grow with the number of
   units. pyfixest takes the same estimates as fixest, to within 6e-8 of
-  logit-stream's, and is slower than fixest at every size, and than logit-stream except at 3 million rows.
-- **The bias correction** costs logit-stream about 40% more than the
+  logit-stream's, and is slower than fixest at every size, and than logit-stream from a million rows.
+- **The bias correction** costs logit-stream about 90% more than the
   uncorrected fit at 10 million rows. alpaca is faster below a million rows
-  (0.70 s against 1.2 s at 100,000) and 9 times slower at 10 million. The
+  (0.70 s against 0.93 s at 100,000) and 9 times slower at 10 million. The
   estimates agree to within 3e-4.
 - Memory grows slowly in logit-stream (0.6 to 1.4 GB over the range) and
-  its disk use, 3 to 380 MB, is what it writes of the rows it re-reads.
+  its disk use, 3 to 510 MB, is what it writes of the rows it re-reads.
 - The other libraries' coefficients agree with logit-stream's to within 6e-8
   (fixest, pyfixest), 3e-4 (alpaca), 5e-15 (`clogit`) and 2e-4 (statsmodels).
 
@@ -110,19 +111,19 @@ The numbers behind the figures.
 
 | rows | logit-stream | fixest (R) | pyfixest |
 |---:|---:|---:|---:|
-| 100,000 | 1.00 | 0.43 | 1.0 |
-| 1,000,000 | 1.4 | 1.1 | 1.6 |
-| 3,000,000 | 4.1 | 2.5 | 3.1 |
-| 10,000,000 | 5.5 | 8.1 | 9.2 |
+| 100,000 | 1.0 | 0.43 | 1.0 |
+| 1,000,000 | 1.3 | 1.1 | 1.6 |
+| 3,000,000 | 1.9 | 2.5 | 3.1 |
+| 10,000,000 | 4.1 | 8.1 | 9.2 |
 
 **Peak memory (GB)**
 
 | rows | logit-stream | fixest (R) | pyfixest |
 |---:|---:|---:|---:|
-| 100,000 | 0.60 | 0.27 | 0.36 |
-| 1,000,000 | 0.96 | 0.57 | 0.80 |
-| 3,000,000 | 1.15 | 1.20 | 1.47 |
-| 10,000,000 | 1.42 | 3.03 | 3.89 |
+| 100,000 | 0.55 | 0.27 | 0.36 |
+| 1,000,000 | 0.93 | 0.57 | 0.80 |
+| 3,000,000 | 1.23 | 1.20 | 1.47 |
+| 10,000,000 | 1.35 | 3.03 | 3.89 |
 
 <!-- /table -->
 
