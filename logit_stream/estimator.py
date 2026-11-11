@@ -439,7 +439,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             "disk_peak_gb": round(disk_peak / 1e9, 4),
             "seconds_total": round(time.time() - t0, 2),
         }
-        if kind == "mlogit" and fe is None and device is None:
+        if kind in ("mlogit", "ologit") and fe is None and device is None:
             diagnostics["information"] = {
                 "form": model.information_form(p0.n_obs),
                 "density": None if getattr(model, "density", None) is None

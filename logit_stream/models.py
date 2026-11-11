@@ -28,6 +28,8 @@ conditional
 
 from __future__ import annotations
 
+import math
+
 import numba as nb
 import numpy as np
 from scipy.special import expit, ndtr, ndtri
@@ -68,6 +70,17 @@ PARTS_MB = 64.0
 MNL_KERNEL_MIN_ROWS = 4096
 MNL_NNZ_DENSITY = 0.2
 MNL_KERNEL_MAX_K = 96
+# The ordered logit's and probit's fused pass (`_ord_pass`), from the same
+# number of rows. Its information is one weighted Gram matrix of the
+# covariates, from each row's outer product (up to ORD_KERNEL_MAX_K
+# covariates: beyond, BLAS's products are faster; measured 1M rows, 5 levels:
+# 0.30 s against 0.44 at 100, 0.66 against 0.52 at 128) or, with at most
+# ORD_NNZ_DENSITY of the entries nonzero (about the crossover at 40-110
+# covariates), from its nonzeros (up to ORD_NNZ_MAX_K, where the accumulator
+# is 2 MB).
+ORD_KERNEL_MAX_K = 96
+ORD_NNZ_DENSITY = 0.3
+ORD_NNZ_MAX_K = 512
 # the fixed-effects logit's parts take runs of this many consecutive units
 CFE_RUN = 64
 CLOGIT_KERNEL_MAX_P = 256
@@ -374,6 +387,146 @@ def _assemble_tri(A, pos, ncols, off, K):
             if l != j:
                 H[off[l]:off[l + 1], off[j]:off[j + 1]] = B.T
     return H
+
+
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _ord_cdf(x, probit):
+    """The error distribution's cdf: the logistic (as `scipy.special.expit`,
+    stable in both tails) or the standard normal."""
+    if probit:
+        return 0.5 * math.erfc(-x * 0.7071067811865476)
+    if x >= 0.0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _ord_pass(X, theta, colmap, cuts, y, w, off, probit, hessian, use_nnz, ll_t, g_t, A_t,
+              XC_t, CC_t):
+    """The ordered logit's (probit's, with `probit`) log-likelihood, gradient
+    and information over the rows of a block, in one pass, as `_mnl_pass_tri`
+    does for the multinomial logit: the rows are split into ``len(ll_t)``
+    parts whose sums the caller adds up. The row's level y lies between the
+    cutpoints ``cuts[y - 1]`` and ``cuts[y]`` (open at the ends), a = cut_y -
+    x'b and b = cut_{y-1} - x'b are its limits, and P = F(a) - F(b), taken as
+    S(b) - S(a) in the upper tail. The pieces are those of `_Ordered.rows`:
+    with g_a = f(a) / P, g_b = -f(b) / P, the score in eta is -(g_a + g_b),
+    and the information is h x x' for the covariates (A_t: the upper triangle
+    by rows, K (K + 1) / 2 entries, or with `use_nnz` the entries ``a K + b``
+    of a K x K matrix, formed from the row's nonzeros), q_c x for the
+    covariates against cutpoint c (XC_t), and a tridiagonal block for the
+    cutpoints (CC_t, the superdiagonal in the upper triangle)."""
+    n = len(y)
+    K = len(colmap)
+    C = len(cuts)
+    P = K + C
+    nacc = A_t.shape[1]
+    n_parts = len(ll_t)
+    has_w = len(w) > 0
+    has_off = len(off) > 0
+    step = (n + n_parts - 1) // n_parts
+    for t in nb.prange(n_parts):
+        u = np.empty(K)
+        nz = np.empty(K, np.int64)
+        g = np.zeros(P)
+        acc = np.zeros(nacc)
+        xc = np.zeros((C, K))
+        cc = np.zeros((C, C))
+        llt = 0.0
+        for i in range(t * step, min(n, (t + 1) * step)):
+            wt = w[i] if has_w else 1.0
+            yi = y[i]
+            eta = off[i] if has_off else 0.0
+            for k in range(K):
+                u[k] = X[i, colmap[k]]
+                eta += u[k] * theta[k]
+            a = cuts[yi] - eta if yi < C else np.inf
+            b = cuts[yi - 1] - eta if yi > 0 else -np.inf
+            Fa = _ord_cdf(a, probit)
+            Sa = _ord_cdf(-a, probit)
+            Fb = _ord_cdf(b, probit)
+            Sb = _ord_cdf(-b, probit)
+            Pr = Sb - Sa if b > 0 else Fa - Fb
+            llt += wt * np.log(Pr)
+            ac = min(max(a, -40.0), 40.0)
+            bc = min(max(b, -40.0), 40.0)
+            if probit:
+                fa = np.exp(-0.5 * ac * ac) / 2.5066282746310002
+                fb = np.exp(-0.5 * bc * bc) / 2.5066282746310002
+            else:
+                fa = Fa * Sa
+                fb = Fb * Sb
+            ga = fa / Pr
+            gb = -fb / Pr
+            s = -(ga + gb) * wt
+            for k in range(K):
+                g[k] += s * u[k]
+            if yi < C:
+                g[K + yi] += ga * wt
+            if yi > 0:
+                g[K + yi - 1] += gb * wt
+            if hessian:
+                if probit:
+                    fpa = -ac * fa
+                    fpb = -bc * fb
+                else:
+                    fpa = fa * (1.0 - 2.0 * Fa)
+                    fpb = fb * (1.0 - 2.0 * Fb)
+                haa = fpa / Pr - ga * ga
+                hbb = -fpb / Pr - gb * gb
+                hab = -ga * gb
+                h = wt * max(-(haa + 2.0 * hab + hbb), 0.0)
+                cnt = 0
+                if use_nnz:
+                    for k in range(K):
+                        if u[k] != 0.0:
+                            nz[cnt] = k
+                            cnt += 1
+                    for aa in range(cnt):
+                        ra = nz[aa]
+                        hx = h * u[ra]
+                        for bb in range(aa, cnt):
+                            rb = nz[bb]
+                            acc[ra * K + rb] += hx * u[rb]
+                else:
+                    k = 0
+                    for c1 in range(K):
+                        hx = h * u[c1]
+                        for c2 in range(c1, K):
+                            acc[k] += hx * u[c2]
+                            k += 1
+                if yi < C:
+                    q = wt * (haa + hab)
+                    if use_nnz:
+                        for aa in range(cnt):
+                            xc[yi, nz[aa]] += q * u[nz[aa]]
+                    else:
+                        for k in range(K):
+                            xc[yi, k] += q * u[k]
+                    cc[yi, yi] -= wt * haa
+                if yi > 0:
+                    q = wt * (hab + hbb)
+                    if use_nnz:
+                        for aa in range(cnt):
+                            xc[yi - 1, nz[aa]] += q * u[nz[aa]]
+                    else:
+                        for k in range(K):
+                            xc[yi - 1, k] += q * u[k]
+                    cc[yi - 1, yi - 1] -= wt * hbb
+                    if yi < C:
+                        cc[yi - 1, yi] -= wt * hab
+        ll_t[t] = llt
+        for k in range(P):
+            g_t[t, k] = g[k]
+        if hessian:
+            for k in range(nacc):
+                A_t[t, k] = acc[k]
+            for c in range(C):
+                for k in range(K):
+                    XC_t[t, c, k] = xc[c, k]
+                for d in range(C):
+                    CC_t[t, c, d] = cc[c, d]
 
 
 @nb.njit(parallel=True, cache=True)
@@ -1013,7 +1166,72 @@ class _Ordered(_Model):
                    haa=-(wt * haa), hbb=-(wt * hbb), hab=-(wt * hab))
         return out
 
+    def nonzero_form(self):
+        """Whether the fused pass forms the information from each row's
+        nonzeros (a design that is mostly zeros), not its outer product."""
+        d = getattr(self, "density", None)
+        return d is not None and d <= ORD_NNZ_DENSITY
+
+    def kernel_ok(self, n):
+        """Whether a block of `n` rows is summed by the fused numba pass
+        (`_ord_pass`). With an absorbed fixed effect (`fix_first`) the fixed
+        effect's own passes run, not this one."""
+        if n < MNL_KERNEL_MIN_ROWS or self.fix_first or self.K == 0:
+            return False
+        return self.K <= (ORD_NNZ_MAX_K if self.nonzero_form() else ORD_KERNEL_MAX_K)
+
+    def information_form(self, n):
+        """How the information is formed, for the fit's diagnostics:
+        ``"outer-product"`` or ``"nonzero"`` (the fused numba pass), else
+        ``"array"`` (NumPy and BLAS)."""
+        if self.kernel_ok(n):
+            return "nonzero" if self.nonzero_form() else "outer-product"
+        return "array"
+
+    def accumulate_full(self, theta, X, cols, y, w, starts, hessian, offset=None):
+        """`accumulate` by the fused numba pass, on the columns `cols` of `X`
+        (a whole block, read in place)."""
+        K, C = self.K, self.C
+        use_nnz = bool(hessian and self.nonzero_form())
+        nacc = (K * K if use_nnz else K * (K + 1) // 2) if hessian else 0
+        P = K + C
+        n_parts = _parts(max(1, len(y) // 256), int(np.sqrt(nacc + C * K + C * C + P)))
+        ll_t, g_t = np.zeros(n_parts), np.zeros((n_parts, P))
+        A_t = np.zeros((n_parts, nacc))
+        XC_t = np.zeros((n_parts, C if hessian else 0, K))
+        CC_t = np.zeros((n_parts, C if hessian else 0, C))
+        empty = np.empty(0)
+        with nb.parallel_chunksize(1):
+            _ord_pass(np.ascontiguousarray(X), np.ascontiguousarray(theta, np.float64),
+                      np.asarray(cols, np.int64), np.ascontiguousarray(self.cuts(theta)), y,
+                      empty if w is None else np.ascontiguousarray(w, np.float64),
+                      empty if offset is None else np.ascontiguousarray(offset, np.float64),
+                      self.link.name == "probit", bool(hessian), use_nnz, ll_t, g_t, A_t, XC_t,
+                      CC_t)
+        ll = float(ll_t.sum())
+        if not np.isfinite(ll):
+            return -np.inf, None, None
+        g = g_t.sum(axis=0)
+        if not hessian:
+            return ll, g, None
+        H = np.zeros((P, P))
+        if use_nnz:
+            S = A_t.sum(axis=0).reshape(K, K)
+        else:
+            S = np.zeros((K, K))
+            S[np.triu_indices(K)] = A_t.sum(axis=0)
+        H[:K, :K] = S + np.triu(S, 1).T
+        xc = XC_t.sum(axis=0)
+        H[:K, K:] = xc.T
+        H[K:, :K] = xc
+        cc = CC_t.sum(axis=0)
+        H[K:, K:] = np.triu(cc) + np.triu(cc, 1).T
+        return ll, g, H
+
     def accumulate(self, theta, X, y, w, starts, hessian, offset=None):
+        if self.kernel_ok(len(y)):
+            return self.accumulate_full(theta, X, np.arange(X.shape[1]), y, w, starts, hessian,
+                                        offset)
         return self._assemble(self.rows(theta, X, y, w, offset, hessian), X, y, w, hessian)
 
     def _assemble(self, r, X, y, w, hessian):

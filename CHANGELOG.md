@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The ordered logit and probit (without fixed effects) are about 4 times faster.** Their passes
+  over the data are now one parallel numba kernel too, 12-14 times faster per pass with 5-10
+  covariates (1 million rows, 5 levels: 0.26 s per pass, now 0.02 s), which leaves reading the data
+  and setup as most of a fit. A design of mostly indicators (76 covariates) is 3.3 times faster
+  and a wide dense one (more than 96 covariates) keeps the previous pass. The estimates are the
+  same.
+- **`fit.diagnostics["information"]` says how the multinomial, ordered logit and probit passes
+  formed the information matrix** (`"outer-product"`, `"nonzero"` or `"array"`), with the
+  design's density.
 - **The multinomial logit (without fixed effects) is about 5 times faster on dense designs and
   1.3-1.8 times faster on designs of indicators.** Each pass over the data is now one parallel
   numba kernel that computes the probabilities, log-likelihood, gradient and information row
