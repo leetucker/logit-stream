@@ -224,6 +224,7 @@ def _binary_route(vcov, cluster, options):
     (``bias_correction``, ``bootcluster``, ...), the separation check
     switched off, or CRV3."""
     import inspect
+
     from .estimator import _fit
     known = set(inspect.signature(_fit).parameters) - {
         "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2", "random",

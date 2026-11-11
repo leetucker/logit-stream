@@ -7,7 +7,7 @@ import pytest
 
 import logit_stream.meat_kernels as MK
 import logit_stream.models as M
-from logit_stream import mlogit_stream, oprobit_stream, ologit_stream
+from logit_stream import mlogit_stream, ologit_stream, oprobit_stream
 
 
 @pytest.fixture(scope="module")

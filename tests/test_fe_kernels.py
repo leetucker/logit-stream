@@ -8,7 +8,7 @@ import pytest
 
 import logit_stream.estimator as est
 import logit_stream.fe_kernels as FK
-from logit_stream import mlogit_stream, oprobit_stream, ologit_stream
+from logit_stream import mlogit_stream, ologit_stream, oprobit_stream
 from logit_stream.fe_kernels import part_starts
 
 

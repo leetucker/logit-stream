@@ -6,8 +6,7 @@ import polars as pl
 import pytest
 from scipy.optimize import minimize
 
-from logit_stream import mlogit_stream
-from logit_stream import models
+from logit_stream import mlogit_stream, models
 
 LEVELS = ["a", "b", "c", "d"]
 OWN = {"b": "s_b", "c": "s_c", "d": "s_d"}
@@ -26,7 +25,8 @@ def data():
     P = np.exp(E - E.max(1, keepdims=True))
     P /= P.sum(1, keepdims=True)
     y = (rng.random(n)[:, None] > P.cumsum(1)).sum(1).clip(0, 3)
-    return pl.DataFrame({"y": np.array(LEVELS)[y], "yi": y, "x1": x1, "g": g, "cl": rng.integers(0, 25, n),
+    return pl.DataFrame({"y": np.array(LEVELS)[y], "yi": y, "x1": x1, "g": g,
+                         "cl": rng.integers(0, 25, n),
                          "w": rng.integers(1, 4, n).astype(float),
                          **{f"s_{l}": S[:, i] for i, l in enumerate(LEVELS)}})
 

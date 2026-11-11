@@ -29,7 +29,7 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     # the streaming engine, the result base classes and the formula front end;
-    # binary logit is hdfe-stream's feglm_stream
+    # binary logit with several fixed effects is hdfe-stream's feglm_stream
     "hdfe-stream[formula]>=0.10.0",  # 0.10.0: pyfixest 0.70 support, parse_formula
     "stream-limits>=0.1.1",     # thread and memory limits for jobs on a scheduler (0.1.1: Windows memory)
     "polars>=1.37,!=1.41.*",

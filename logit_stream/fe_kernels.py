@@ -519,7 +519,6 @@ def _ord_fe_score(X, i, colmap, theta, cuts, eff_g, offi, BDg, yi, probit, u, sv
     s = -(g_a + g_b)."""
     K = len(colmap)
     C = len(cuts)
-    P = K + C - 1
     eta = eff_g + offi
     for k in range(K):
         u[k] = X[i, colmap[k]]

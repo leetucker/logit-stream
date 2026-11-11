@@ -33,11 +33,11 @@ from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
 from .newton import _Driver
 from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
 from .results import (
+    BinaryLogitResult,
     ConditionalFELogitResult,
     ConditionalLogitResult,
     LogitMulti,
     MultinomialLogitResult,
-    BinaryLogitResult,
     OrderedLogitResult,
     OrderedProbitResult,
     _ic,
@@ -394,8 +394,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             else None
         if random is not None:
             keys = {nm: ("fe" if i == 0 else f"fe{i + 1}") for i, nm in enumerate(spec.fe)}
-            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger, budget=budget,
-                                cov=random_cov)
+            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger,
+                                budget=budget, cov=random_cov)
             if clusters:
                 cl = {k: (i, 0) for i, k in enumerate(clusters)}
                 bad = [k for k, ok in fe.nested(cl).items() if not ok]

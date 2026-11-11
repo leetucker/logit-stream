@@ -36,6 +36,10 @@ def both(fml, df, tmp_path, **kw):
     return new, old
 
 
+def _scalars(d):
+    return {k: (v[0] if isinstance(v, (list, tuple)) else v) for k, v in d.items()}
+
+
 CASES = {
     "plain": ("y ~ x1 + x2", {}),
     "hetero": ("y ~ x1 + x2", {"vcov": "hetero"}),
@@ -70,8 +74,7 @@ def test_matches_feglm_stream(case, data, tmp_path):
         assert np.isclose(getattr(new, stat), getattr(old, stat), rtol=1e-8), stat
     if new.fe_names:
         assert np.isclose(new.pseudo_r2_within, old.pseudo_r2_within, rtol=1e-8, equal_nan=True)
-        one = lambda d: {k: (v[0] if isinstance(v, (list, tuple)) else v) for k, v in d.items()}
-        assert one(new.n_levels) == one(old.n_levels)
+        assert _scalars(new.n_levels) == _scalars(old.n_levels)
 
 
 def test_estimates_are_at_the_maximum(data, tmp_path):
