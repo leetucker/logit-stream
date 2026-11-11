@@ -198,9 +198,10 @@ def test_diagnostics_report_the_information_form(mnl_data, monkeypatch):
     monkeypatch.setattr(M, "SPARSE_DENSITY", 1.01)                       # with its numba kernel
     assert mlogit_stream(fml, mnl_data, verbose=False).diagnostics["information"]["form"] \
         == "array-nonzero"
-    # an absorbed fixed effect has its own passes: no entry
-    assert "information" not in mlogit_stream("y ~ x1 | g", mnl_data,
-                                              verbose=False).diagnostics
+    # an absorbed fixed effect: the fused passes over rows grouped by it
+    monkeypatch.undo()
+    assert mlogit_stream("y ~ x1 | g", mnl_data, verbose=False).diagnostics[
+        "information"]["form"] == "grouped-outer-product"
 
 
 # ------------------------------------------------- the ordered models' fused pass

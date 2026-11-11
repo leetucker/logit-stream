@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The multinomial and ordered logit with an absorbed fixed effect are 2-4 times faster.** Each
+  pass over the data is now a fused parallel kernel, 4-11 times faster per pass (1 million rows,
+  500 groups: 0.8 s per pass for the multinomial logit, now 0.2 s; 0.6 s for the ordered logit,
+  now 0.05 s). The first pass writes the rows grouped by the fixed effect, so that each thread
+  owns whole groups (about 0.3 s more for 1 million rows; free if they are grouped already).
+  The estimates are the same.
+- **The ordered logit and probit with an absorbed fixed effect no longer slow down with many
+  groups.** The within pseudo R-squared's null model, a fit of one location per group, is now
+  solved by Newton's method instead of L-BFGS: 100,000 groups took 47 s, now 2 s in all. The
+  Newton step for any fixed-effects fit also uses all threads for its largest product
+  (100,000 groups: 12.7 s, now 5.3 s for the multinomial logit).
 - **The ordered logit and probit (without fixed effects) are about 4 times faster.** Their passes
   over the data are now one parallel numba kernel too, 12-14 times faster per pass with 5-10
   covariates (1 million rows, 5 levels: 0.26 s per pass, now 0.02 s), which leaves reading the data

@@ -82,19 +82,27 @@ class _Pass0:
     seconds: float = 0.0
     units: dict = None              # conditional FE logit: the units with variation
     incomplete: tuple = None        # (choice sets dropped as incomplete, their key columns)
+    fe_sorted: bool = False         # the blocks hold whole groups of the fixed effect, as runs
 
 
 # The design's 0/1 columns (indicators of factor levels, binary covariates) are
 # stored as one byte each and put back together as each block is read.
 COMPACT_BINARY = True
 
+# Write the rows grouped by an absorbed fixed effect, for the fused passes
+# of fe_kernels.py (see `_build`).
+SORT_FE = True
+
 
 def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngine, *,
            weights: str | None, clusters: dict, case: list | None, levels: list | None,
            in_memory: bool, dtype, block_mb: float, log, panel: list | None = None,
            offset: pl.Expr | None = None, weights_type: str = "aweights",
-           altwise: bool = False) -> _Pass0:
-    """Pass 0 for one model (see the module docstring).
+           altwise: bool = False, sort_fe: bool = False) -> _Pass0:
+    """Pass 0 for one model (see the module docstring). With `sort_fe` the
+    rows are written grouped by the one fixed effect (a group's rows
+    consecutive, each group in one block; the passes of fe_kernels.py need
+    that), unless one group is too big for a block.
 
     `clusters` maps each clustering's name to its source columns; `case` is
     the conditional logit's choice-set columns, and `panel` the mixed
@@ -293,6 +301,7 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
 
     n_cases, wcases, n_panels = 0, 0.0, 0
     units = {}
+    fe_sorted = False
     log(f"pass 0: writing {n_obs:,} rows as blocks of {rows:,}"
         + (" (in memory)" if in_memory else ""))
     if choice:
@@ -303,11 +312,25 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
                                                 else None, kind=kind, info=units,
                                                 evaluated=evaluated)
     else:
-        for frame in iter_batches(design_path, rows):
-            convert(frame)
+        fe_sorted = False
+        if sort_fe and len(fe_cols) == 1:
+            d, cols = next(iter(fe_cols.items()))
+            big = engine.collect(design.group_by(cols).len().select(pl.col("len").max()),
+                                 "largest fixed-effect level").item()
+            fe_sorted = big <= 4 * rows
+            if not fe_sorted:
+                log(f"pass 0: the largest level of {d} has {big:,} rows, more than a block "
+                    "holds; the rows stay in their order")
+        if fe_sorted:
+            for frame in iter_groups(engine, design_path, cols, rows, run_dir,
+                                     fe_tables[d].height, [*cols, ROW], log=log):
+                convert(frame)
+        else:
+            for frame in iter_batches(design_path, rows):
+                convert(frame)
     design_path.unlink(missing_ok=True)
     return _Pass0(store=store, n_raw=n_raw, n_obs=n_obs, wsum=wsum, levels=lv, units=units,
-                  incomplete=incomplete,
+                  incomplete=incomplete, fe_sorted=fe_sorted,
                   counts=counts, cluster_tables=cluster_tables, fe_tables=fe_tables,
                   n_cases=n_cases, wcases=wcases, n_panels=n_panels, usable=usable,
                   xmeans=xmeans, xsd=xsd, xbinary=xbinary, xnonzero=xnonzero,

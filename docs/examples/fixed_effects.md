@@ -94,7 +94,11 @@ the system exactly by eliminating the group blocks (the Schur complement);
 the coefficients' variance is the inverse of the reduced matrix, which is
 exactly the corresponding block of the inverse of the whole matrix. The
 robust and clustered variances use each row's score net of the part the
-fixed effects absorb. The rows need not be sorted by group.
+fixed effects absorb. Your rows can be in any order. The first pass writes
+them grouped by the fixed effect (a sort that costs nothing extra if they
+already are), so each thread of the fast passes works on whole groups. If one
+level has more rows than a block holds, the rows stay in their order and the
+slower passes run.
 
 Memory grows with $G \times (J-1) \times P$: 2,462 PUMAs, five outcome levels
 and 150 coefficients take about 15 MB. A fit refuses to start above 8 GB.

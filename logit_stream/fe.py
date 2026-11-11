@@ -21,7 +21,9 @@ still one read of the rows, accumulating H_bb as without fixed effects plus
 the per-group blocks (G x J x J and G x J x P, the latter the one that
 grows: G = 2,400 PUMAs, J = 6 and P = 300 take 35 MB), and the variance of b
 is the inverse of the reduced matrix, which is the b block of the inverse of
-the whole information matrix. Rows need not be sorted by group.
+the whole information matrix. The rows may be in any order; when pass 0 can write them
+grouped by the fixed effect (a group's rows consecutive), the passes are
+fused numba kernels over whole groups (fe_kernels.py).
 
 Groups whose outcome never varies have infinite effects (in the multinomial
 logit, a group with one level; in the ordered, a group all at the lowest or
@@ -38,6 +40,7 @@ meant for groups with many rows each.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numba as nb
@@ -48,7 +51,14 @@ from hdfe_stream.core.resources import MemoryBudget
 from scipy.optimize import minimize
 from scipy.special import xlogy
 
-from .models import _gram, _mnl_info_sparse
+from . import fe_kernels
+from .models import (
+    MNL_KERNEL_MAX_K,
+    MNL_KERNEL_MIN_ROWS,
+    ORD_KERNEL_MAX_K,
+    _gram,
+    _mnl_info_sparse,
+)
 from .newton import _chunks, _design, _Driver
 from .store import CODE
 
@@ -84,6 +94,23 @@ def _mnl_group_info(order, seg, segg, X, P, w, Haa, B):
                                 B[g, l, base + k] += v * x
 
 
+def _tall_product(A, B, min_rows=20_000):
+    """A' B for tall matrices (many rows, few columns: the groups' blocks,
+    G x J rows by P columns). BLAS parallelizes over the small product, not
+    over the rows, and so runs this one at a few GFlop/s on one core; the rows
+    are cut into one piece per thread, whose products are added (the sums
+    differ from the single product by rounding only)."""
+    n = A.shape[0]
+    parts = min(nb.get_num_threads(), n // min_rows)
+    if parts < 2:
+        return A.T @ B
+    cuts = np.linspace(0, n, parts + 1).astype(np.int64)
+    with ThreadPoolExecutor(parts) as ex:
+        pieces = list(ex.map(lambda ab: A[ab[0]:ab[1]].T @ B[ab[0]:ab[1]],
+                             zip(cuts[:-1], cuts[1:])))
+    return sum(pieces)
+
+
 def _segments(f):
     order = np.argsort(f, kind="stable")
     fs = f[order]
@@ -108,9 +135,102 @@ def _subset(ch, keep):
 def _ordered_table_loglik(n, link):
     """The maximized log-likelihood of an ordered logit with one location
     per row of the count table `n` (G x J, weighted counts) and common
-    cutpoints: sum n_gk log(F(c_k - a_g) - F(c_(k-1) - a_g)). Only the
-    differences matter, so c_1 = 0; L-BFGS on the table, with the analytic
-    gradient."""
+    cutpoints: sum n_gk log(F(c_k - a_g) - F(c_(k-1) - a_g)). Newton's
+    method on the table (`_ordered_table_newton`: the table's information
+    has the same arrow shape as the model's, so a step costs a few array
+    operations on the G x J table whatever G is); L-BFGS if it does not
+    converge."""
+    ll = _ordered_table_newton(n, link)
+    return _ordered_table_lbfgs(n, link) if ll is None else ll
+
+
+def _ordered_table_newton(n, link, maxiter=100, tol=1e-12):
+    """`_ordered_table_loglik` by Newton's method with step halving, or None
+    if it does not converge. With the first cutpoint at 0 (only differences
+    matter) the unknowns are the G locations a_g and the J - 2 other cutpoints
+    c. A cell (g, k) is a row of the ordered model with weight n_gk, limits
+    c_k - a_g and c_(k-1) - a_g, and the pieces of `_Ordered.rows`; the
+    information is diagonal in the locations (D), with a G x (J - 2) block B
+    against the cutpoints and a small block H_cc, so a step solves the Schur
+    complement H_cc - B' D^-1 B for the cutpoints and then each location."""
+    G, J = n.shape
+    C = J - 1
+    pos = n > 0
+    nn = np.where(pos, n, 0.0)
+    p = n.sum(axis=0).cumsum()[:-1] / n.sum()
+    c0 = link.ppf(p)
+
+    def cells(a, c, hessian):
+        ce = np.r_[-np.inf, c, np.inf]
+        u = ce[1:][None, :] - a[:, None]
+        lo = ce[:-1][None, :] - a[:, None]
+        Fu, Fl, Su, Sl = link.cdf(u), link.cdf(lo), link.sf(u), link.sf(lo)
+        Pr = np.where(lo > 0, Sl - Su, Fu - Fl)
+        if np.any(Pr[pos] <= 0):
+            return None
+        fu, fl = link.pdf(u, Fu, Su), link.pdf(lo, Fl, Sl)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            gu = np.where(pos, fu / Pr, 0.0)
+            gl = np.where(pos, -fl / Pr, 0.0)
+        ll = float(np.sum(nn[pos] * np.log(Pr[pos])))
+        ga = -(nn * (gu + gl)).sum(axis=1)
+        gc = (nn * gu)[:, :C].sum(axis=0) + (nn * gl)[:, 1:].sum(axis=0)
+        if not hessian:
+            return ll, ga, gc[1:], None
+        with np.errstate(divide="ignore", invalid="ignore"):
+            haa = np.where(pos, link.dpdf(u, fu, Fu) / Pr - gu ** 2, 0.0)
+            hbb = np.where(pos, -link.dpdf(lo, fl, Fl) / Pr - gl ** 2, 0.0)
+        hab = -gu * gl
+        D = (nn * np.maximum(-(haa + 2 * hab + hbb), 0.0)).sum(axis=1)
+        Bq = (nn * (haa + hab))[:, :C] + (nn * (hab + hbb))[:, 1:]
+        Hcc = np.diag(-(nn * haa)[:, :C].sum(axis=0) - (nn * hbb)[:, 1:].sum(axis=0))
+        off = -(nn * hab)[:, 1:C].sum(axis=0)                  # cutpoints k, k + 1
+        idx = np.arange(C - 1)
+        Hcc[idx, idx + 1] = off
+        Hcc[idx + 1, idx] = off
+        return ll, ga, gc[1:], (D, Bq[:, 1:], Hcc[1:, 1:])
+
+    a, c = np.full(G, -c0[0]), c0 - c0[0]
+    cur = cells(a, c, True)
+    if cur is None:
+        return None
+    for _ in range(maxiter):
+        ll, ga, gc, (D, B, Hcc) = cur
+        D = np.maximum(D, 1e-300)
+        if C > 1:
+            S = Hcc - B.T @ (B / D[:, None])
+            S = (S + S.T) / 2
+            try:
+                dc = np.linalg.solve(S, gc - B.T @ (ga / D))
+            except np.linalg.LinAlgError:
+                return None
+        else:
+            dc = np.zeros(0)
+        da = (ga - B @ dc) / D
+        dec = float(ga @ da + gc @ dc)
+        if not np.isfinite(dec):
+            return None
+        if dec < tol * max(1.0, abs(ll)) * 1e-4:
+            return ll
+        t = 1.0
+        for _ in range(30):
+            c_new = np.r_[0.0, c[1:] + t * dc]
+            new = cells(a + t * da, c_new, False) if np.all(np.diff(c_new) > 0) else None
+            if new is not None and new[0] >= ll - 1e-12 * abs(ll):
+                break
+            t /= 2
+        else:
+            return None
+        a, c = a + t * da, c_new
+        cur = cells(a, c, True)
+        if cur is None:
+            return None
+    return None
+
+
+def _ordered_table_lbfgs(n, link):
+    """`_ordered_table_loglik` by L-BFGS on the table, with the analytic
+    gradient: the fallback for a table Newton's method does not solve."""
     G, J = n.shape
 
     def unpack(v):
@@ -261,7 +381,14 @@ class _AbsorbedFE:
         Haa = np.zeros((G, J, J)) if hessian else None
         B = np.zeros((G, J, P)) if hessian else None
         rows = driver._rows()
+        kp = self._kernel_pass(theta, A, hessian, ga, Haa, B)
         for blk in self.store:
+            if kp is not None and len(blk["y"]) >= MNL_KERNEL_MIN_ROWS:
+                l = kp.add(blk)
+                if not np.isfinite(l):
+                    return -np.inf, None, None
+                ll += l
+                continue
             for ch in _chunks(blk, rows):
                 keep = self.keep_g[ch["fe"]]
                 if not keep.all():
@@ -277,7 +404,35 @@ class _AbsorbedFE:
                 if not np.isfinite(l):
                     return -np.inf, None, None
                 ll += l
+        if kp is not None:
+            kp.finish(gt, Htt) if m.kind == "mlogit" else kp.finish(gt, ga, Htt, Haa, B)
         return self._finish(ll, gt, ga, Htt, Haa, B, hessian)
+
+    def kernel_ok(self):
+        """Whether the passes are the fused kernels' (see `_kernel_pass`)."""
+        m = self.model
+        if not getattr(self.p0, "fe_sorted", False):
+            return False
+        if m.kind == "mlogit":
+            return m.K <= MNL_KERNEL_MAX_K and not m.nonzero_form()
+        return m.K <= ORD_KERNEL_MAX_K
+
+    def information_form(self):
+        """For the fit's diagnostics: ``"grouped-outer-product"`` (the fused
+        kernels over the rows grouped by the fixed effect) or ``"array"``."""
+        return "grouped-outer-product" if self.kernel_ok() else "array"
+
+    def _kernel_pass(self, theta, A, hessian, ga, Haa, B):
+        """The fused pass over the blocks that are big enough (fe_kernels.py),
+        or None: it needs the rows grouped by the fixed effect (pass 0 does
+        that, `fe_sorted`), a design of not too many columns, and, for the
+        multinomial logit, not one that is mostly zeros (the sparse kernels
+        below are better there)."""
+        if not self.kernel_ok():
+            return None
+        if self.model.kind == "mlogit":
+            return fe_kernels.MultinomialPass(self, theta, A, hessian, ga, Haa, B)
+        return fe_kernels.OrderedPass(self, theta, A, hessian)
 
     def _device_pass(self, driver, theta, hessian):
         """`pass_` with the sums formed on the GPU (device/)."""
@@ -381,7 +536,7 @@ class _AbsorbedFE:
                 Dinv = np.linalg.pinv(H.aa, hermitian=True)
             BD = Dinv @ H.ta                                  # G x J x P
             Bf = H.ta.reshape(G * J, P)
-            red = H.tt - Bf.T @ BD.reshape(G * J, P)
+            red = H.tt - _tall_product(Bf, BD.reshape(G * J, P))
             H.Dinv, H.BD, H.red = Dinv, BD, (red + red.T) / 2
         return H
 

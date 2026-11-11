@@ -401,6 +401,42 @@ def _ord_cdf(x, probit):
     return e / (1.0 + e)
 
 
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _ord_terms(a, b, probit, hessian):
+    """A row of the ordered model, from the limits a and b of its level (the
+    cutpoints less the linear predictor): P = F(a) - F(b) (as S(b) - S(a) in
+    the upper tail), g_a = f(a) / P and g_b = -f(b) / P, and with `hessian`
+    the second derivatives h_aa, h_bb and h_ab (zero without). The pieces of
+    `_Ordered.rows`; returns (P, g_a, g_b, h_aa, h_bb, h_ab)."""
+    Fa = _ord_cdf(a, probit)
+    Sa = _ord_cdf(-a, probit)
+    Fb = _ord_cdf(b, probit)
+    Sb = _ord_cdf(-b, probit)
+    Pr = Sb - Sa if b > 0 else Fa - Fb
+    ac = min(max(a, -40.0), 40.0)
+    bc = min(max(b, -40.0), 40.0)
+    if probit:
+        fa = np.exp(-0.5 * ac * ac) / 2.5066282746310002
+        fb = np.exp(-0.5 * bc * bc) / 2.5066282746310002
+    else:
+        fa = Fa * Sa
+        fb = Fb * Sb
+    ga = fa / Pr
+    gb = -fb / Pr
+    haa = 0.0
+    hbb = 0.0
+    if hessian:
+        if probit:
+            fpa = -ac * fa
+            fpb = -bc * fb
+        else:
+            fpa = fa * (1.0 - 2.0 * Fa)
+            fpb = fb * (1.0 - 2.0 * Fb)
+        haa = fpa / Pr - ga * ga
+        hbb = -fpb / Pr - gb * gb
+    return Pr, ga, gb, haa, hbb, -ga * gb
+
+
 @nb.njit(parallel=True, cache=True, error_model="numpy")
 def _ord_pass(X, theta, colmap, cuts, y, w, off, probit, hessian, use_nnz, ll_t, g_t, A_t,
               XC_t, CC_t):
@@ -443,22 +479,8 @@ def _ord_pass(X, theta, colmap, cuts, y, w, off, probit, hessian, use_nnz, ll_t,
                 eta += u[k] * theta[k]
             a = cuts[yi] - eta if yi < C else np.inf
             b = cuts[yi - 1] - eta if yi > 0 else -np.inf
-            Fa = _ord_cdf(a, probit)
-            Sa = _ord_cdf(-a, probit)
-            Fb = _ord_cdf(b, probit)
-            Sb = _ord_cdf(-b, probit)
-            Pr = Sb - Sa if b > 0 else Fa - Fb
+            Pr, ga, gb, haa, hbb, hab = _ord_terms(a, b, probit, hessian)
             llt += wt * np.log(Pr)
-            ac = min(max(a, -40.0), 40.0)
-            bc = min(max(b, -40.0), 40.0)
-            if probit:
-                fa = np.exp(-0.5 * ac * ac) / 2.5066282746310002
-                fb = np.exp(-0.5 * bc * bc) / 2.5066282746310002
-            else:
-                fa = Fa * Sa
-                fb = Fb * Sb
-            ga = fa / Pr
-            gb = -fb / Pr
             s = -(ga + gb) * wt
             for k in range(K):
                 g[k] += s * u[k]
@@ -467,15 +489,6 @@ def _ord_pass(X, theta, colmap, cuts, y, w, off, probit, hessian, use_nnz, ll_t,
             if yi > 0:
                 g[K + yi - 1] += gb * wt
             if hessian:
-                if probit:
-                    fpa = -ac * fa
-                    fpb = -bc * fb
-                else:
-                    fpa = fa * (1.0 - 2.0 * Fa)
-                    fpb = fb * (1.0 - 2.0 * Fb)
-                haa = fpa / Pr - ga * ga
-                hbb = -fpb / Pr - gb * gb
-                hab = -ga * gb
                 h = wt * max(-(haa + 2.0 * hab + hbb), 0.0)
                 cnt = 0
                 if use_nnz:

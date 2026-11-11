@@ -41,7 +41,7 @@ from .results import (
     OrderedProbitResult,
     _ic,
 )
-from .store import _build
+from .store import SORT_FE, _build
 
 WORKDIR_ENV = "LOGIT_STREAM_WORKDIR"
 
@@ -297,6 +297,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         p0 = _build(lf, spec, kind, run.path, engine, weights=weights,
                     clusters=clusters, case=case, levels=levels,
                     in_memory=(storage == "memory"),
+                    sort_fe=(SORT_FE and kind in ("mlogit", "ologit") and random is None
+                             and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
                     altwise=altwise)
@@ -439,9 +441,10 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             "disk_peak_gb": round(disk_peak / 1e9, 4),
             "seconds_total": round(time.time() - t0, 2),
         }
-        if kind in ("mlogit", "ologit") and fe is None and device is None:
+        if kind in ("mlogit", "ologit") and device is None and (
+                fe is None or hasattr(fe, "information_form")):
             diagnostics["information"] = {
-                "form": model.information_form(p0.n_obs),
+                "form": model.information_form(p0.n_obs) if fe is None else fe.information_form(),
                 "density": None if getattr(model, "density", None) is None
                 else round(float(model.density), 4)}
         if engine.fallbacks:
