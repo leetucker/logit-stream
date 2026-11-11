@@ -155,7 +155,9 @@ def test_the_upper_bound_holds(fn, fml, kw):
     r = json.loads(out.stdout.strip().splitlines()[-1])
     assert r["rss"] <= r["mem"][1]
     # a loose check that the estimate is not wildly pessimistic. A bare process holds less resident
-    # memory on Windows than the Linux-calibrated baseline allowance (0.395 of expected was measured)
-    assert r["rss"] >= (0.3 if sys.platform == "win32" else 0.4) * r["mem"][0]
+    # memory on Windows and macOS than the Linux-calibrated baseline allowance (0.395 of expected
+    # was measured on Windows; the fused passes, which allocate no row-sized temporaries, brought
+    # macOS to 0.35)
+    assert r["rss"] >= (0.3 if sys.platform in ("win32", "darwin") else 0.4) * r["mem"][0]
     if r["disk_peak"] is not None:          # the several-fixed-effects route does not record it
         assert r["disk_peak"] <= r["disk"][1] + 0.01
