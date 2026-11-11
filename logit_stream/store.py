@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 from hdfe_stream.core.report import warn
 from hdfe_stream.core.store import (
     BlockStore,
@@ -322,10 +323,9 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
             if not fe_sorted:
                 log(f"pass 0: the largest level of {d} has {big:,} rows, more than a block "
                     "holds; the rows stay in their order")
-            elif budget is not None and not _grouped(engine, design_path, cols,
-                                                     fe_tables[d].height):
-                need = _partition_gb(design_path, rows)
-                if need > budget.headroom_gb():
+            elif budget is not None and (need := _partition_gb(design_path, rows)) \
+                    > budget.headroom_gb():
+                if not _grouped(design_path, cols, fe_tables[d].height, rows):
                     fe_sorted = False
                     log(f"pass 0: sorting the rows by {d} needs about {need:.1f} GB and "
                         f"{budget.headroom_gb():.1f} GB is free ({budget}); the rows stay in "
@@ -350,12 +350,25 @@ _WIDTH = {pl.Int8: 1, pl.UInt8: 1, pl.Int16: 2, pl.UInt16: 2, pl.Int32: 4, pl.UI
           pl.Float32: 4, pl.Boolean: 1}
 
 
-def _grouped(engine, path, cols, n_groups):
+def _grouped(path, cols, n_groups, rows):
     """Whether each group's rows of the file are consecutive already (then
-    `iter_groups` partitions nothing)."""
-    starts = pl.any_horizontal([(pl.col(c) != pl.col(c).shift()).fill_null(True) for c in cols])
-    runs = engine.collect(pl.scan_parquet(path).select(starts.sum().alias("r")), "group runs")
-    return int(runs["r"].item()) == n_groups
+    `iter_groups` partitions nothing): as many runs of the key columns as
+    groups. Read `rows` at a time, the key columns only, so the check holds
+    no more than a batch."""
+    runs, last = 0, None
+    pf = pq.ParquetFile(path, pre_buffer=False)
+    try:
+        for batch in pf.iter_batches(batch_size=rows, columns=list(cols)):
+            key = [batch.column(c).to_numpy(zero_copy_only=False) for c in cols]
+            start = np.zeros(len(key[0]), bool)
+            for k in key:
+                start[1:] |= k[1:] != k[:-1]
+            start[0] = last is None or any(k[0] != v for k, v in zip(key, last))
+            runs += int(start.sum())
+            last = [k[-1] for k in key]
+    finally:
+        pf.close()
+    return runs == n_groups
 
 
 def _partition_gb(path, rows):

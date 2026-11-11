@@ -274,3 +274,17 @@ def test_weights_and_clusters_count_the_rows_used(data, name):
             assert a.all_vcovs[k][1] == b.all_vcovs[k][1], k
         for stat in ("loglik", "loglik_null", "aic", "bic"):
             assert np.isclose(getattr(a, stat), getattr(b, stat), rtol=1e-8), stat
+
+
+@pytest.mark.parametrize("rows", [7, 100, 10_000])
+def test_grouped_counts_runs_across_batches(tmp_path, rows):
+    from logit_stream.store import _grouped
+    rng = np.random.default_rng(3)
+    g = np.sort(rng.integers(0, 40, 500))
+    path = tmp_path / "d.parquet"
+    pl.DataFrame({"a": g, "b": g % 3, "s": g.astype(str)}).write_parquet(path)
+    n = len(np.unique(g))
+    assert _grouped(path, ["a"], n, rows) and _grouped(path, ["s"], n, rows)
+    shuffled = tmp_path / "s.parquet"
+    pl.DataFrame({"a": rng.permutation(g)}).write_parquet(shuffled)
+    assert not _grouped(shuffled, ["a"], n, rows)
