@@ -12,7 +12,7 @@ an AMD EPYC 7R13 with 16 vCPUs, the process capped at 29.6 GB of host memory,
 CUDA 13.2, CuPy 14.2. The CPU fits are on the same machine, so each pair is
 like for like; they are not the CPU benchmarks' (an Intel Xeon with a
 different clock), whose times are somewhat shorter (the multinomial logit of
-all 12.9 million adults: 54 s here, 37 s there). Every fit was preceded by a
+all 12.9 million adults: 54 s here, 21 s there). Every fit was preceded by a
 small fit of the same model in its process, so that numba's and CuPy's
 compilation is not timed (JAX compiles again for the new shapes, which is
 timed, as a user would see it). The variance is the robust one (clustered by

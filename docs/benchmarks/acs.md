@@ -32,7 +32,7 @@ same richer model with the PUMA effects drawn from a normal distribution
 whose covariance across the outcome levels is estimated, by Laplace's
 approximation (the default; the tables also have it within fixed state
 effects). On all 12.9 million adults it took 283 s for the multinomial and
-139 s for the ordered logit, 6.4 and 2.8 times the fixed-effect fits, with
+139 s for the ordered logit, 7.7 and 14 times the fixed-effect fits, with
 about the same memory: each read also gathers the approximation's
 third-derivative terms, 64 per PUMA for the multinomial's four equations.
 The joint-mode approximation (`random_method="joint-mode"`) is cheaper but
@@ -81,30 +81,30 @@ have every size):
 
 | model | logit-stream | fastest alternative |
 |---|---|---|
-| binary, 41 coefficients | 17 s, 3.1 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
-| multinomial, 164 coefficients | 34 s, 1.3 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
-| ordered, 40 + 4 coefficients | 31 s, 1.3 GB | 301 s, 8.2 GB (mord, a different loss); R's clm and polr ran out of memory |
+| binary, 41 coefficients | 18 s, 3.0 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
+| multinomial, 164 coefficients | 21 s, 1.2 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
+| ordered, 40 + 4 coefficients | 6.6 s, 1.2 GB | 301 s, 8.2 GB (mord, a different loss); R's clm and polr ran out of memory |
 
 - **Memory is flat in the multinomial and ordered logit.** logit-stream held
   1.1 to 1.3 GB from 1 million to 12.9 million adults; the in-memory
   libraries grow in proportion to the data, to 8–13 GB.
 - **The binary logit** has the least to gain, since scikit-learn's
   Newton–Cholesky solver takes the same six Newton steps in memory. It is
-  faster below about 3 million adults (1.8 s against 2.8 s at 1 million),
-  and logit-stream from there (5.2 s against 5.3 s at 3 million, 17 s against
+  faster below about 3 million adults (1.8 s against 2.5 s at 1 million),
+  and logit-stream from there (4.9 s against 5.3 s at 3 million, 18 s against
   23 s at 12.9 million), with about a quarter of the memory. (The plain
   binary logit runs through a fused, parallel kernel in hdfe-stream 0.6;
   before it, 40 s at 12.9 million adults.)
 - **The multinomial and ordered logit** are faster than every in-memory
   library from about 300,000 adults (the ordered, from 30,000), and at 12.9
-  million adults the multinomial took 6 times less than scikit-learn's
-  Newton–Cholesky and 9 times less than statsmodels'. statsmodels'
+  million adults the multinomial took 9 times less than scikit-learn's
+  Newton–Cholesky and 14 times less than statsmodels'. statsmodels'
   `OrderedModel` took 11 minutes at a million adults and timed out at 3
   million.
-- **Fixed effects** for the 2,462 PUMAs cost 1.2 to 1.6 times the plain fit
-  from a million adults up (binary 25 s, multinomial 44 s, ordered 50 s at 12.9 million adults);
+- **Fixed effects** for the 2,462 PUMAs cost 1.3 to 1.9 times the plain fit
+  from a million adults up (binary 26 s, multinomial 37 s, ordered 9.7 s at 12.9 million adults);
   random intercepts, 283 s (multinomial) and 139 s (ordered).
-- **Small samples:** a fit costs about 1.2 s whatever the size, mostly
+- **Small samples:** a fit costs about 0.9 s whatever the size, mostly
   fixed overhead, and scikit-learn's and statsmodels' finish in under a second
   at 10,000 adults.
 - On a GPU, the multinomial and ordered fits of all 12.9 million adults took
@@ -142,9 +142,9 @@ figure, so that every color in a figure can be told from every other.
 Long-format data cost them one row per person and level, and the
 expanded design 164 columns per row: at a million adults xlogit took 53 s
 and 18.4 GB and jaxlogit 267 s and 29.0 GB (nearly all of this machine's
-memory), against logit-stream's 4.2 s and 1.1 GB, and both ran out of
+memory), against logit-stream's 2.7 s and 1.1 GB, and both ran out of
 memory at 3 million. At 10,000 adults xlogit is faster (0.4 s against
-1.2 s). xlogit agrees with logit-stream to within 1e-5; jaxlogit to within
+0.9 s). xlogit agrees with logit-stream to within 1e-5; jaxlogit to within
 3e-4, its L-BFGS stopping on its own gradient tolerance after 135 to 165
 iterations.
 
@@ -172,9 +172,9 @@ R's `glm`, `fixest` (given every CPU, as in hdfe-stream's benchmarks) and
 pyfixest fit the binary logit, with fixest and logit-stream also with the
 PUMA fixed effects; `nnet::multinom` fits the multinomial logit and `MASS::polr`
 and `ordinal::clm` the ordered logit. At 12.9 million adults logit-stream's
-binary logit took 17 s and 3.1 GB, against 28 s and 26 GB for pyfixest,
+binary logit took 18 s and 3.0 GB, against 22 s and 17 GB for pyfixest,
 39 s and 12 GB for fixest and 102 s and 25 GB for `glm`. `multinom` took 20
-minutes at 3 million adults (logit-stream, 9 s) and timed out at 6 million.
+minutes at 3 million adults (logit-stream, 5 s) and timed out at 6 million.
 `polr` took 5 and 11 minutes at 3 and 6 million adults and `clm` 2 and 3
 (`clm` reported that it had not converged at both sizes, though its estimates
 agree with logit-stream's to 4e-11), and both ran out of memory at 12.9 million (this machine has 30 GB). The
@@ -210,27 +210,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 | 1.2 | 1.2 | 0.13 | 0.10 | 0.04 |
-| 30,000 | 1.2 | 1.3 | 0.77 | 0.11 | 0.16 |
-| 100,000 | 1.4 | 1.5 | 1.3 | 0.22 | 0.28 |
-| 300,000 | 2.3 | 2.1 | 2.1 | 0.56 | 0.74 |
-| 1,000,000 | 2.8 | 3.6 | 4.6 | 1.8 | 2.6 |
-| 3,000,000 | 5.2 | 7.0 | 11.4 | 5.3 | 8.2 |
-| 6,000,000 | 9.0 | 12.5 | 21.5 | 10.8 | 16.4 |
-| 12,853,377 | 17.0 | 24.6 | 43.7 | 23.0 | 36.8 |
+| 10,000 | 0.88 | 0.89 | 0.13 | 0.10 | 0.04 |
+| 30,000 | 0.94 | 0.95 | 0.77 | 0.11 | 0.16 |
+| 100,000 | 1.1 | 1.2 | 1.3 | 0.22 | 0.28 |
+| 300,000 | 2.1 | 1.9 | 2.1 | 0.56 | 0.74 |
+| 1,000,000 | 2.5 | 3.3 | 4.6 | 1.8 | 2.6 |
+| 3,000,000 | 4.9 | 6.8 | 11.4 | 5.3 | 8.2 |
+| 6,000,000 | 8.7 | 12.6 | 21.5 | 10.8 | 16.4 |
+| 12,853,377 | 17.6 | 25.6 | 43.7 | 23.0 | 36.8 |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.58 | 0.56 | 0.23 | 0.24 | 0.26 |
-| 30,000 | 0.66 | 0.66 | 0.25 | 0.26 | 0.27 |
-| 100,000 | 0.82 | 0.82 | 0.32 | 0.35 | 0.34 |
-| 300,000 | 1.05 | 1.16 | 0.51 | 0.60 | 0.53 |
-| 1,000,000 | 1.51 | 2.04 | 1.17 | 1.46 | 1.16 |
-| 3,000,000 | 1.87 | 1.81 | 3.04 | 3.90 | 2.77 |
-| 6,000,000 | 2.65 | 1.95 | 5.56 | 7.12 | 4.82 |
-| 12,853,377 | 3.06 | 2.04 | 11.72 | 12.03 | 8.20 |
+| 10,000 | 0.55 | 0.53 | 0.23 | 0.24 | 0.26 |
+| 30,000 | 0.63 | 0.63 | 0.25 | 0.26 | 0.27 |
+| 100,000 | 0.80 | 0.81 | 0.32 | 0.35 | 0.34 |
+| 300,000 | 1.04 | 1.11 | 0.51 | 0.60 | 0.53 |
+| 1,000,000 | 1.46 | 2.06 | 1.17 | 1.46 | 1.16 |
+| 3,000,000 | 1.92 | 1.82 | 3.04 | 3.90 | 2.77 |
+| 6,000,000 | 2.63 | 1.92 | 5.56 | 7.12 | 4.82 |
+| 12,853,377 | 3.04 | 1.98 | 11.72 | 12.03 | 8.20 |
 
 <!-- /table -->
 
@@ -242,27 +242,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (low memory) | logit-stream (PUMA fixed effects) | logit-stream (PUMA random intercepts) | logit-stream (state fixed + PUMA random) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels | xlogit (OPG standard errors) | jaxlogit (no random parameters) |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 1.2 | 1.3 | 1.3 | 44.0 | 54.3 | 0.41 | 0.19 | 0.26 | 0.41 | 6.3 |
-| 30,000 | 1.8 | 1.6 | 1.5 | 25.2 | 27.0 | 4.1 | 0.39 | 0.60 | 1.8 | 10.1 |
-| 100,000 | 2.0 | 1.9 | 1.8 | 15.9 | 18.5 | 7.2 | 1.1 | 1.6 | 5.3 | 29.4 |
-| 300,000 | 2.4 | 2.5 | 2.3 | 23.3 | 27.0 | 15.4 | 4.2 | 6.2 | 16.1 | 83.4 |
-| 1,000,000 | 4.2 | 4.0 | 4.8 | 43.4 | 50.2 | 39.2 | 14.8 | 22.1 | 52.9 | 267 |
-| 3,000,000 | 8.6 | 8.6 | 11.4 | 85.5 | 87.1 | 96.3 | 45.7 | 70.7 | out of memory | out of memory |
-| 6,000,000 | 14.8 | 16.8 | 21.4 | 172 | 169 | 189 | 90.3 | 140 | – | – |
-| 12,853,377 | 34.2 | 38.0 | 43.9 | 283 | 318 | 391 | 194 | 301 | – | – |
+| 10,000 | 0.88 | 0.88 | 1.1 | 44.0 | 54.3 | 0.41 | 0.19 | 0.26 | 0.41 | 6.3 |
+| 30,000 | 0.95 | 1.0 | 1.3 | 25.2 | 27.0 | 4.1 | 0.39 | 0.60 | 1.8 | 10.1 |
+| 100,000 | 1.1 | 1.4 | 1.7 | 15.9 | 18.5 | 7.2 | 1.1 | 1.6 | 5.3 | 29.4 |
+| 300,000 | 1.5 | 1.9 | 1.9 | 23.3 | 27.0 | 15.4 | 4.2 | 6.2 | 16.1 | 83.4 |
+| 1,000,000 | 2.7 | 3.2 | 3.9 | 43.4 | 50.2 | 39.2 | 14.8 | 22.1 | 52.9 | 267 |
+| 3,000,000 | 5.3 | 6.8 | 8.6 | 85.5 | 87.1 | 96.3 | 45.7 | 70.7 | out of memory | out of memory |
+| 6,000,000 | 9.6 | 12.5 | 18.3 | 172 | 169 | 189 | 90.3 | 140 | – | – |
+| 12,853,377 | 20.8 | 28.7 | 36.8 | 283 | 318 | 391 | 194 | 301 | – | – |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (low memory) | logit-stream (PUMA fixed effects) | logit-stream (PUMA random intercepts) | logit-stream (state fixed + PUMA random) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels | xlogit (OPG standard errors) | jaxlogit (no random parameters) |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.54 | 0.54 | 0.58 | 0.66 | 0.67 | 0.24 | 0.25 | 0.27 | 0.33 | 0.86 |
-| 30,000 | 0.60 | 0.60 | 0.64 | 0.62 | 0.63 | 0.27 | 0.28 | 0.30 | 0.71 | 1.53 |
-| 100,000 | 0.73 | 0.65 | 0.78 | 0.70 | 0.71 | 0.36 | 0.40 | 0.40 | 2.03 | 3.45 |
-| 300,000 | 0.94 | 0.75 | 0.97 | 0.86 | 0.92 | 0.62 | 0.64 | 0.59 | 5.62 | 9.19 |
-| 1,000,000 | 1.09 | 0.76 | 1.07 | 1.09 | 0.96 | 1.35 | 1.67 | 1.25 | 18.38 | 29.04 |
-| 3,000,000 | 1.27 | 0.77 | 1.29 | 1.30 | 1.33 | 3.35 | 4.27 | 3.13 | out of memory | out of memory |
-| 6,000,000 | 1.27 | 0.81 | 1.32 | 1.34 | 1.35 | 6.09 | 6.40 | 4.82 | – | – |
-| 12,853,377 | 1.31 | 0.87 | 1.29 | 1.22 | 1.26 | 10.85 | 13.34 | 9.27 | – | – |
+| 10,000 | 0.52 | 0.52 | 0.54 | 0.66 | 0.67 | 0.24 | 0.25 | 0.27 | 0.33 | 0.86 |
+| 30,000 | 0.59 | 0.58 | 0.59 | 0.62 | 0.63 | 0.27 | 0.28 | 0.30 | 0.71 | 1.53 |
+| 100,000 | 0.72 | 0.63 | 0.73 | 0.70 | 0.71 | 0.36 | 0.40 | 0.40 | 2.03 | 3.45 |
+| 300,000 | 0.92 | 0.74 | 0.91 | 0.86 | 0.92 | 0.62 | 0.64 | 0.59 | 5.62 | 9.19 |
+| 1,000,000 | 1.05 | 0.73 | 1.07 | 1.09 | 0.96 | 1.35 | 1.67 | 1.25 | 18.38 | 29.04 |
+| 3,000,000 | 1.26 | 0.74 | 1.28 | 1.30 | 1.33 | 3.35 | 4.27 | 3.13 | out of memory | out of memory |
+| 6,000,000 | 1.27 | 0.78 | 1.32 | 1.34 | 1.35 | 6.09 | 6.40 | 4.82 | – | – |
+| 12,853,377 | 1.24 | 0.84 | 1.32 | 1.22 | 1.26 | 10.85 | 13.34 | 9.27 | – | – |
 
 <!-- /table -->
 
@@ -274,27 +274,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | logit-stream (PUMA random intercepts) | logit-stream (state fixed + PUMA random) | statsmodels | mord (all-threshold loss) |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 1.1 | 1.7 | 1.8 | 1.9 | 6.5 | 0.30 |
-| 30,000 | 1.2 | 1.9 | 2.3 | 2.3 | 16.8 | 2.4 |
-| 100,000 | 1.4 | 1.9 | 2.9 | 3.0 | 56.6 | 4.6 |
-| 300,000 | 2.0 | 2.7 | 5.9 | 5.3 | 219 | 7.9 |
-| 1,000,000 | 3.9 | 5.3 | 14.7 | 13.9 | 657 | 21.3 |
-| 3,000,000 | 9.2 | 13.3 | 27.6 | 25.8 | timeout | 67.3 |
-| 6,000,000 | 16.8 | 24.2 | 58.3 | 53.2 | – | 137 |
-| 12,853,377 | 31.3 | 50.4 | 139 | 122 | – | 301 |
+| 10,000 | 0.83 | 0.94 | 1.8 | 1.9 | 6.5 | 0.30 |
+| 30,000 | 0.85 | 0.97 | 2.3 | 2.3 | 16.8 | 2.4 |
+| 100,000 | 0.88 | 1.00 | 2.9 | 3.0 | 56.6 | 4.6 |
+| 300,000 | 1.0 | 1.2 | 5.9 | 5.3 | 219 | 7.9 |
+| 1,000,000 | 1.3 | 1.7 | 14.7 | 13.9 | 657 | 21.3 |
+| 3,000,000 | 2.2 | 2.9 | 27.6 | 25.8 | timeout | 67.3 |
+| 6,000,000 | 3.6 | 5.0 | 58.3 | 53.2 | – | 137 |
+| 12,853,377 | 6.6 | 9.7 | 139 | 122 | – | 301 |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | logit-stream (PUMA random intercepts) | logit-stream (state fixed + PUMA random) | statsmodels | mord (all-threshold loss) |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.54 | 0.55 | 0.55 | 0.55 | 0.25 | 0.23 |
-| 30,000 | 0.60 | 0.61 | 0.52 | 0.52 | 0.27 | 0.25 |
-| 100,000 | 0.75 | 0.77 | 0.68 | 0.68 | 0.35 | 0.31 |
-| 300,000 | 0.94 | 1.06 | 0.97 | 0.99 | 0.49 | 0.40 |
-| 1,000,000 | 1.06 | 1.18 | 1.12 | 1.19 | 1.27 | 1.00 |
-| 3,000,000 | 1.25 | 1.25 | 1.16 | 1.18 | timeout | 2.33 |
-| 6,000,000 | 1.27 | 1.29 | 1.29 | 1.33 | – | 4.13 |
-| 12,853,377 | 1.27 | 1.31 | 1.23 | 1.24 | – | 8.23 |
+| 10,000 | 0.50 | 0.50 | 0.55 | 0.55 | 0.25 | 0.23 |
+| 30,000 | 0.56 | 0.54 | 0.52 | 0.52 | 0.27 | 0.25 |
+| 100,000 | 0.69 | 0.64 | 0.68 | 0.68 | 0.35 | 0.31 |
+| 300,000 | 0.85 | 0.84 | 0.97 | 0.99 | 0.49 | 0.40 |
+| 1,000,000 | 1.11 | 0.98 | 1.12 | 1.19 | 1.27 | 1.00 |
+| 3,000,000 | 1.22 | 1.24 | 1.16 | 1.18 | timeout | 2.33 |
+| 6,000,000 | 1.22 | 1.28 | 1.29 | 1.33 | – | 4.13 |
+| 12,853,377 | 1.24 | 1.24 | 1.23 | 1.24 | – | 8.23 |
 
 <!-- /table -->
 
@@ -306,27 +306,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | glm (R) | fixest (R) | fixest (R, PUMA fixed effects) | pyfixest |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 1.2 | 1.2 | 0.24 | 0.40 | 0.25 | 1.3 |
-| 30,000 | 1.2 | 1.3 | 0.29 | 0.29 | 0.31 | 1.3 |
-| 100,000 | 1.4 | 1.5 | 0.92 | 0.54 | 0.86 | 1.4 |
-| 300,000 | 2.3 | 2.1 | 2.3 | 1.0 | 2.1 | 1.8 |
-| 1,000,000 | 2.8 | 3.6 | 7.0 | 2.8 | 5.8 | 3.1 |
-| 3,000,000 | 5.2 | 7.0 | 21.6 | 8.4 | 16.1 | 6.7 |
-| 6,000,000 | 9.0 | 12.5 | 43.1 | 17.7 | 31.4 | 12.6 |
-| 12,853,377 | 17.0 | 24.6 | 102 | 38.9 | 68.3 | 28.2 |
+| 10,000 | 0.88 | 0.89 | 0.24 | 0.40 | 0.25 | 0.93 |
+| 30,000 | 0.94 | 0.95 | 0.29 | 0.29 | 0.31 | 0.96 |
+| 100,000 | 1.1 | 1.2 | 0.92 | 0.54 | 0.86 | 1.0 |
+| 300,000 | 2.1 | 1.9 | 2.3 | 1.0 | 2.1 | 1.4 |
+| 1,000,000 | 2.5 | 3.3 | 7.0 | 2.8 | 5.8 | 2.4 |
+| 3,000,000 | 4.9 | 6.8 | 21.6 | 8.4 | 16.1 | 5.2 |
+| 6,000,000 | 8.7 | 12.6 | 43.1 | 17.7 | 31.4 | 9.9 |
+| 12,853,377 | 17.6 | 25.6 | 102 | 38.9 | 68.3 | 22.0 |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | glm (R) | fixest (R) | fixest (R, PUMA fixed effects) | pyfixest |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.58 | 0.56 | 0.20 | 0.22 | 0.25 | 0.36 |
-| 30,000 | 0.66 | 0.66 | 0.25 | 0.27 | 0.28 | 0.40 |
-| 100,000 | 0.82 | 0.82 | 0.45 | 0.35 | 0.42 | 0.55 |
-| 300,000 | 1.05 | 1.16 | 0.91 | 0.56 | 0.82 | 0.98 |
-| 1,000,000 | 1.51 | 2.04 | 2.54 | 1.24 | 1.70 | 2.45 |
-| 3,000,000 | 1.87 | 1.81 | 7.24 | 3.51 | 5.52 | 6.66 |
-| 6,000,000 | 2.65 | 1.95 | 14.16 | 6.06 | 11.06 | 12.29 |
-| 12,853,377 | 3.06 | 2.04 | 25.01 | 12.09 | 23.33 | 25.93 |
+| 10,000 | 0.55 | 0.53 | 0.20 | 0.22 | 0.25 | 0.33 |
+| 30,000 | 0.63 | 0.63 | 0.25 | 0.27 | 0.28 | 0.36 |
+| 100,000 | 0.80 | 0.81 | 0.45 | 0.35 | 0.42 | 0.47 |
+| 300,000 | 1.04 | 1.11 | 0.91 | 0.56 | 0.82 | 0.72 |
+| 1,000,000 | 1.46 | 2.06 | 2.54 | 1.24 | 1.70 | 1.66 |
+| 3,000,000 | 1.92 | 1.82 | 7.24 | 3.51 | 5.52 | 4.27 |
+| 6,000,000 | 2.63 | 1.92 | 14.16 | 6.06 | 11.06 | 8.22 |
+| 12,853,377 | 3.04 | 1.98 | 25.01 | 12.09 | 23.33 | 17.25 |
 
 <!-- /table -->
 
@@ -336,27 +336,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | multinom (R) |
 |---:|---:|---:|
-| 10,000 | 1.2 | 2.6 |
-| 30,000 | 1.8 | 8.8 |
-| 100,000 | 2.0 | 32.5 |
-| 300,000 | 2.4 | 115 |
-| 1,000,000 | 4.2 | 415 |
-| 3,000,000 | 8.6 | 1,224 |
-| 6,000,000 | 14.8 | timeout |
-| 12,853,377 | 34.2 | – |
+| 10,000 | 0.88 | 2.6 |
+| 30,000 | 0.95 | 8.8 |
+| 100,000 | 1.1 | 32.5 |
+| 300,000 | 1.5 | 115 |
+| 1,000,000 | 2.7 | 415 |
+| 3,000,000 | 5.3 | 1,224 |
+| 6,000,000 | 9.6 | timeout |
+| 12,853,377 | 20.8 | – |
 
 **Peak memory (GB)**
 
 | n | logit-stream | multinom (R) |
 |---:|---:|---:|
-| 10,000 | 0.54 | 0.21 |
-| 30,000 | 0.60 | 0.24 |
-| 100,000 | 0.73 | 0.40 |
-| 300,000 | 0.94 | 0.70 |
-| 1,000,000 | 1.09 | 2.10 |
-| 3,000,000 | 1.27 | 5.95 |
+| 10,000 | 0.52 | 0.21 |
+| 30,000 | 0.59 | 0.24 |
+| 100,000 | 0.72 | 0.40 |
+| 300,000 | 0.92 | 0.70 |
+| 1,000,000 | 1.05 | 2.10 |
+| 3,000,000 | 1.26 | 5.95 |
 | 6,000,000 | 1.27 | timeout |
-| 12,853,377 | 1.31 | – |
+| 12,853,377 | 1.24 | – |
 
 <!-- /table -->
 
@@ -366,26 +366,26 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | polr (R) | clm (R) |
 |---:|---:|---:|---:|
-| 10,000 | 1.1 | 0.69 | 0.70 |
-| 30,000 | 1.2 | 2.1 | 1.1 |
-| 100,000 | 1.4 | 6.9 | 2.8 |
-| 300,000 | 2.0 | 25.0 | 6.5 |
-| 1,000,000 | 3.9 | 93.2 | 26.3 |
-| 3,000,000 | 9.2 | 289 | 126 |
-| 6,000,000 | 16.8 | 668 | 182 |
-| 12,853,377 | 31.3 | out of memory | out of memory |
+| 10,000 | 0.83 | 0.69 | 0.70 |
+| 30,000 | 0.85 | 2.1 | 1.1 |
+| 100,000 | 0.88 | 6.9 | 2.8 |
+| 300,000 | 1.0 | 25.0 | 6.5 |
+| 1,000,000 | 1.3 | 93.2 | 26.3 |
+| 3,000,000 | 2.2 | 289 | 126 |
+| 6,000,000 | 3.6 | 668 | 182 |
+| 12,853,377 | 6.6 | out of memory | out of memory |
 
 **Peak memory (GB)**
 
 | n | logit-stream | polr (R) | clm (R) |
 |---:|---:|---:|---:|
-| 10,000 | 0.54 | 0.23 | 0.35 |
-| 30,000 | 0.60 | 0.27 | 0.43 |
-| 100,000 | 0.75 | 0.47 | 0.64 |
-| 300,000 | 0.94 | 0.95 | 1.21 |
-| 1,000,000 | 1.06 | 2.85 | 2.94 |
-| 3,000,000 | 1.25 | 7.48 | 9.18 |
-| 6,000,000 | 1.27 | 15.66 | 19.47 |
-| 12,853,377 | 1.27 | out of memory | out of memory |
+| 10,000 | 0.50 | 0.23 | 0.35 |
+| 30,000 | 0.56 | 0.27 | 0.43 |
+| 100,000 | 0.69 | 0.47 | 0.64 |
+| 300,000 | 0.85 | 0.95 | 1.21 |
+| 1,000,000 | 1.11 | 2.85 | 2.94 |
+| 3,000,000 | 1.22 | 7.48 | 9.18 |
+| 6,000,000 | 1.22 | 15.66 | 19.47 |
+| 12,853,377 | 1.24 | out of memory | out of memory |
 
 <!-- /table -->
