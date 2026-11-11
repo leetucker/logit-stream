@@ -30,12 +30,12 @@
   "data_disk": "local NVMe (/dev/nvme1n1)",
   "baseline": "2026-10-29T0326Z_c8id.4xlarge_spot_binary-kernel",
   "baseline_measured": "2026-10-29",
-  "note": "The multinomial and ordered logit-stream rows in acs (logit-stream, PUMA fixed effects and low memory series), the binary logit-stream rows in acs and panel, the panel logit-stream rows, and the pyfixest rows in acs and panel were re-measured on this run with logit-stream 0.3.1 (321c00a) and hdfe-stream 0.10.0, pyfixest 0.70.0. Other logit-stream rows (choice, mixed, the random-intercept series) are from 2026-11-05 (logit-stream 0.3.0, hdfe-stream 0.9.0); all other libraries' rows are from the baseline run (logit-stream 0.1.0, hdfe-stream 0.6.0). The GPU results are from 0.1.0. The panel fixed-effects logit-stream row at 3 million rows (5.3 s in that run, against 4.1 s with 0.3.0) was re-measured alone on 2026-11-11T1627Z_c8id.4xlarge_spot_fe-3m-recheck (3.95 s) and replaces it."
+  "note": "The multinomial and ordered logit-stream rows in acs (logit-stream, PUMA fixed effects and low memory series), the binary logit-stream rows in acs and panel, the panel logit-stream rows, and the pyfixest rows in acs and panel were re-measured on this run with logit-stream 0.3.1 (321c00a) and hdfe-stream 0.10.0, pyfixest 0.70.0. Other logit-stream rows (choice, mixed, the random-intercept series) are from 2026-11-05 (logit-stream 0.3.0, hdfe-stream 0.9.0); all other libraries' rows are from the baseline run (logit-stream 0.1.0, hdfe-stream 0.6.0). The GPU results are from 0.1.0. The panel fixed-effects logit-stream row at 3 million rows (5.3 s in that run, against 4.1 s with 0.3.0) was re-measured alone on 2026-11-11T1627Z_c8id.4xlarge_spot_fe-3m-recheck (3.95 s) and replaces it. The binary logit-stream rows in acs (logit-stream and PUMA fixed effects series) and the panel fixed-effects logit-stream rows were then re-measured on 2026-11-11T1725Z_c8id.4xlarge_spot_binary-ordered-engine and ..._engine-panel, with logit-stream 6a9b260 (the binary logit fitted by the ordered engine); the rows replace those of the earlier run."
  },
  "code": {
   "logit-stream": {
-   "commit": "321c00a275bf56c7e3e8b65a6f5bc161d9cbdbd5",
-   "describe": "321c00a",
+   "commit": "6a9b260",
+   "describe": "6a9b260",
    "dirty": false
   },
   "hdfe-stream": {

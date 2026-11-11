@@ -81,7 +81,7 @@ have every size):
 
 | model | logit-stream | fastest alternative |
 |---|---|---|
-| binary, 41 coefficients | 18 s, 3.0 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
+| binary, 41 coefficients | 7.6 s, 1.3 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
 | multinomial, 164 coefficients | 21 s, 1.2 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
 | ordered, 40 + 4 coefficients | 6.6 s, 1.2 GB | 301 s, 8.2 GB (mord, a different loss); R's clm and polr ran out of memory |
 
@@ -89,12 +89,11 @@ have every size):
   1.1 to 1.3 GB from 1 million to 12.9 million adults; the in-memory
   libraries grow in proportion to the data, to 8–13 GB.
 - **The binary logit** has the least to gain, since scikit-learn's
-  Newton–Cholesky solver takes the same six Newton steps in memory. It is
-  faster below about 3 million adults (1.8 s against 2.5 s at 1 million),
-  and logit-stream from there (4.9 s against 5.3 s at 3 million, 18 s against
-  23 s at 12.9 million), with about a quarter of the memory. (The plain
-  binary logit runs through a fused, parallel kernel in hdfe-stream 0.6;
-  before it, 40 s at 12.9 million adults.)
+  Newton–Cholesky solver takes the same Newton steps in memory. It is
+  faster below about a million adults (0.56 s against 1.1 s at 300,000),
+  and logit-stream from there (1.5 s against 1.8 s at 1 million, 2.5 s against
+  5.3 s at 3 million, 7.6 s against 23 s at 12.9 million), with about a tenth
+  of the memory.
 - **The multinomial and ordered logit** are faster than every in-memory
   library from about 300,000 adults (the ordered, from 30,000), and at 12.9
   million adults the multinomial took 9 times less than scikit-learn's
@@ -102,7 +101,7 @@ have every size):
   `OrderedModel` took 11 minutes at a million adults and timed out at 3
   million.
 - **Fixed effects** for the 2,462 PUMAs cost 1.3 to 1.9 times the plain fit
-  from a million adults up (binary 26 s, multinomial 37 s, ordered 9.7 s at 12.9 million adults);
+  from a million adults up (binary 14 s, multinomial 37 s, ordered 9.7 s at 12.9 million adults);
   random intercepts, 283 s (multinomial) and 139 s (ordered).
 - **Small samples:** a fit costs about 0.9 s whatever the size, mostly
   fixed overhead, and scikit-learn's and statsmodels' finish in under a second
@@ -172,7 +171,7 @@ R's `glm`, `fixest` (given every CPU, as in hdfe-stream's benchmarks) and
 pyfixest fit the binary logit, with fixest and logit-stream also with the
 PUMA fixed effects; `nnet::multinom` fits the multinomial logit and `MASS::polr`
 and `ordinal::clm` the ordered logit. At 12.9 million adults logit-stream's
-binary logit took 18 s and 3.0 GB, against 22 s and 17 GB for pyfixest,
+binary logit took 7.6 s and 1.3 GB, against 22 s and 17 GB for pyfixest,
 39 s and 12 GB for fixest and 102 s and 25 GB for `glm`. `multinom` took 20
 minutes at 3 million adults (logit-stream, 5 s) and timed out at 6 million.
 `polr` took 5 and 11 minutes at 3 and 6 million adults and `clm` 2 and 3
@@ -210,27 +209,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.88 | 0.89 | 0.13 | 0.10 | 0.04 |
-| 30,000 | 0.94 | 0.95 | 0.77 | 0.11 | 0.16 |
-| 100,000 | 1.1 | 1.2 | 1.3 | 0.22 | 0.28 |
-| 300,000 | 2.1 | 1.9 | 2.1 | 0.56 | 0.74 |
-| 1,000,000 | 2.5 | 3.3 | 4.6 | 1.8 | 2.6 |
-| 3,000,000 | 4.9 | 6.8 | 11.4 | 5.3 | 8.2 |
-| 6,000,000 | 8.7 | 12.6 | 21.5 | 10.8 | 16.4 |
-| 12,853,377 | 17.6 | 25.6 | 43.7 | 23.0 | 36.8 |
+| 10,000 | 0.87 | 1.0 | 0.13 | 0.10 | 0.04 |
+| 30,000 | 0.88 | 1.00 | 0.77 | 0.11 | 0.16 |
+| 100,000 | 0.92 | 1.1 | 1.3 | 0.22 | 0.28 |
+| 300,000 | 1.1 | 1.4 | 2.1 | 0.56 | 0.74 |
+| 1,000,000 | 1.5 | 2.1 | 4.6 | 1.8 | 2.6 |
+| 3,000,000 | 2.5 | 3.9 | 11.4 | 5.3 | 8.2 |
+| 6,000,000 | 4.0 | 6.7 | 21.5 | 10.8 | 16.4 |
+| 12,853,377 | 7.6 | 13.6 | 43.7 | 23.0 | 36.8 |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | scikit-learn (lbfgs) | scikit-learn (newton-cholesky) | statsmodels |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.55 | 0.53 | 0.23 | 0.24 | 0.26 |
-| 30,000 | 0.63 | 0.63 | 0.25 | 0.26 | 0.27 |
-| 100,000 | 0.80 | 0.81 | 0.32 | 0.35 | 0.34 |
-| 300,000 | 1.04 | 1.11 | 0.51 | 0.60 | 0.53 |
-| 1,000,000 | 1.46 | 2.06 | 1.17 | 1.46 | 1.16 |
-| 3,000,000 | 1.92 | 1.82 | 3.04 | 3.90 | 2.77 |
-| 6,000,000 | 2.63 | 1.92 | 5.56 | 7.12 | 4.82 |
-| 12,853,377 | 3.04 | 1.98 | 11.72 | 12.03 | 8.20 |
+| 10,000 | 0.50 | 0.50 | 0.23 | 0.24 | 0.26 |
+| 30,000 | 0.57 | 0.54 | 0.25 | 0.26 | 0.27 |
+| 100,000 | 0.70 | 0.66 | 0.32 | 0.35 | 0.34 |
+| 300,000 | 0.88 | 0.84 | 0.51 | 0.60 | 0.53 |
+| 1,000,000 | 1.00 | 0.99 | 1.17 | 1.46 | 1.16 |
+| 3,000,000 | 1.24 | 1.26 | 3.04 | 3.90 | 2.77 |
+| 6,000,000 | 1.23 | 1.29 | 5.56 | 7.12 | 4.82 |
+| 12,853,377 | 1.25 | 1.25 | 11.72 | 12.03 | 8.20 |
 
 <!-- /table -->
 
@@ -306,27 +305,27 @@ The numbers behind the figures. A dash means the configuration was not run at th
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | glm (R) | fixest (R) | fixest (R, PUMA fixed effects) | pyfixest |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.88 | 0.89 | 0.24 | 0.40 | 0.25 | 0.93 |
-| 30,000 | 0.94 | 0.95 | 0.29 | 0.29 | 0.31 | 0.96 |
-| 100,000 | 1.1 | 1.2 | 0.92 | 0.54 | 0.86 | 1.0 |
-| 300,000 | 2.1 | 1.9 | 2.3 | 1.0 | 2.1 | 1.4 |
-| 1,000,000 | 2.5 | 3.3 | 7.0 | 2.8 | 5.8 | 2.4 |
-| 3,000,000 | 4.9 | 6.8 | 21.6 | 8.4 | 16.1 | 5.2 |
-| 6,000,000 | 8.7 | 12.6 | 43.1 | 17.7 | 31.4 | 9.9 |
-| 12,853,377 | 17.6 | 25.6 | 102 | 38.9 | 68.3 | 22.0 |
+| 10,000 | 0.87 | 1.0 | 0.24 | 0.40 | 0.25 | 0.93 |
+| 30,000 | 0.88 | 1.00 | 0.29 | 0.29 | 0.31 | 0.96 |
+| 100,000 | 0.92 | 1.1 | 0.92 | 0.54 | 0.86 | 1.0 |
+| 300,000 | 1.1 | 1.4 | 2.3 | 1.0 | 2.1 | 1.4 |
+| 1,000,000 | 1.5 | 2.1 | 7.0 | 2.8 | 5.8 | 2.4 |
+| 3,000,000 | 2.5 | 3.9 | 21.6 | 8.4 | 16.1 | 5.2 |
+| 6,000,000 | 4.0 | 6.7 | 43.1 | 17.7 | 31.4 | 9.9 |
+| 12,853,377 | 7.6 | 13.6 | 102 | 38.9 | 68.3 | 22.0 |
 
 **Peak memory (GB)**
 
 | n | logit-stream | logit-stream (PUMA fixed effects) | glm (R) | fixest (R) | fixest (R, PUMA fixed effects) | pyfixest |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.55 | 0.53 | 0.20 | 0.22 | 0.25 | 0.33 |
-| 30,000 | 0.63 | 0.63 | 0.25 | 0.27 | 0.28 | 0.36 |
-| 100,000 | 0.80 | 0.81 | 0.45 | 0.35 | 0.42 | 0.47 |
-| 300,000 | 1.04 | 1.11 | 0.91 | 0.56 | 0.82 | 0.72 |
-| 1,000,000 | 1.46 | 2.06 | 2.54 | 1.24 | 1.70 | 1.66 |
-| 3,000,000 | 1.92 | 1.82 | 7.24 | 3.51 | 5.52 | 4.27 |
-| 6,000,000 | 2.63 | 1.92 | 14.16 | 6.06 | 11.06 | 8.22 |
-| 12,853,377 | 3.04 | 1.98 | 25.01 | 12.09 | 23.33 | 17.25 |
+| 10,000 | 0.50 | 0.50 | 0.20 | 0.22 | 0.25 | 0.33 |
+| 30,000 | 0.57 | 0.54 | 0.25 | 0.27 | 0.28 | 0.36 |
+| 100,000 | 0.70 | 0.66 | 0.45 | 0.35 | 0.42 | 0.47 |
+| 300,000 | 0.88 | 0.84 | 0.91 | 0.56 | 0.82 | 0.72 |
+| 1,000,000 | 1.00 | 0.99 | 2.54 | 1.24 | 1.70 | 1.66 |
+| 3,000,000 | 1.24 | 1.26 | 7.24 | 3.51 | 5.52 | 4.27 |
+| 6,000,000 | 1.23 | 1.29 | 14.16 | 6.06 | 11.06 | 8.22 |
+| 12,853,377 | 1.25 | 1.25 | 25.01 | 12.09 | 23.33 | 17.25 |
 
 <!-- /table -->
 

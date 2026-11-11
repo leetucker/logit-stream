@@ -40,7 +40,7 @@ The rest of this page is the short version of
 The profile depends on the model: a multinomial logit has K x (J - 1) parameters, an ordered one
 K + J - 1, a conditional one K, and the information matrix, its per-thread copies, the absorbed
 fixed effect's G x J x P cross blocks and the clusters' score sums are sized from them.
-`logit_stream` and `probit_stream` are hdfe-stream's `feglm_stream` and profile as it does.
+`probit_stream`, and `logit_stream` with `profile=True`, are hdfe-stream's `feglm_stream` and profile as it does.
 
 ### The multinomial logit with several absorbed fixed effects
 

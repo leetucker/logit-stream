@@ -110,13 +110,13 @@ On American Community Survey microdata (see the
 |---|---|---|
 | multinomial, 5 levels, 164 coefficients | 21 s, 1.2 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
 | ordered, 5 levels | 6.6 s, 1.2 GB | 301 s, 8.2 GB (mord, which fits a different loss); statsmodels' `OrderedModel` timed out (30 minutes) from 3 million rows |
-| binary | 18 s, 3.0 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
+| binary | 7.6 s, 1.3 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
 
-The binary logit is hdfe-stream's, and on a design with only 41 columns
-scikit-learn's Newton–Cholesky solver takes the same Newton steps in memory:
-it is faster below about 3 million rows, logit-stream above, and it needs a
-quarter of the memory. Its advantage there is memory, and absorbing fixed
-effects that would otherwise be thousands of indicator columns.
+On a binary logit with only 41 columns, scikit-learn's Newton–Cholesky solver
+takes the same Newton steps in memory: it is faster below about a million
+rows, logit-stream above, and it needs a tenth of the memory. The advantage
+there is mostly memory, and absorbing fixed effects that would otherwise be
+thousands of indicator columns.
 
 **On small data it gains you little.** A fit costs about a second of
 fixed overhead (imports, formula planning, pass 0), and a process
