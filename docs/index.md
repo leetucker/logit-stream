@@ -65,9 +65,9 @@ and one dense solve.
   (`"y ~ x | puma"`): each level gets its own intercept for every outcome
   level, solved exactly within each Newton step by eliminating the per-level
   blocks of the information matrix, with standard errors identical to the fit
-  with indicators. The binary logit absorbs any number of fixed effects
-  (hdfe-stream's), with an optional correction of the incidental-parameter
-  bias, and so does the multinomial logit, through the equivalent Poisson
+  with indicators. The binary logit and probit absorb one the same way (and any
+  number through hdfe-stream), with an optional correction of the incidental-parameter
+  bias. The multinomial logit absorbs any number through the equivalent Poisson
   regression.
 - **Random intercepts** (experimental) for the multinomial and ordered
   logit, by Laplace's approximation, with nested or crossed groupings, as

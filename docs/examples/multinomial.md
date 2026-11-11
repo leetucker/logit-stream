@@ -116,6 +116,37 @@ intercepts. With 50 states, the three differ little:
 │ ...
 ```
 
+## A covariate for one level only
+
+A covariate can enter just one level's equation with `own_covariates=`, as
+when each group's baseline share of an area predicts that group alone. The
+other equations have no coefficient on it, so `k - 1` shares add `k - 1`
+parameters instead of `(k - 1)^2`. Here each PUMA's share of every non-base
+group, computed from the sample for the illustration (a census table would be
+the usual source):
+
+```python
+shares = people.group_by("puma").agg(
+    [(pl.col("race") == r).mean().alias(f"share_{r}") for r in RACES[1:]])
+people = people.join(shares, on="puma")
+own = mlogit_stream(f"race ~ {X}", people, levels=RACES, vcov="hetero",
+                    own_covariates={r: f"share_{r}" for r in RACES[1:]})
+own.tidy().filter(pl.col("Coefficient").str.contains("share"))
+```
+
+```text
+│ Black:share_Black             ┆ 6.209997 ┆ 0.080621   ┆ 77.027129 ┆ 0.0      │
+│ Hispanic:share_Hispanic       ┆ 9.942888 ┆ 0.149696   ┆ 66.420452 ┆ 0.0      │
+│ Asian:share_Asian             ┆ 9.455848 ┆ 0.157375   ┆ 60.084914 ┆ 0.0      │
+│ AIAN:share_AIAN               ┆ 53.56695 ┆ 1.279475   ┆ 41.86636  ┆ 0.0      │
+│ Multiracial:share_Multiracial ┆ 60.97355 ┆ 1.363412   ┆ 44.721288 ┆ 0.0      │
+```
+
+The fit has 35 coefficients, the 30 of the model without them and these five,
+named `"<level>:<column>"`. `predict` reads the share columns from the new
+data. The columns must not also be in the formula, and the option is not
+available with fixed or random effects, `firth=` or `device="cuda"`.
+
 ## Weights
 
 `weights="w"` multiplies each row's log-likelihood by `w`. With

@@ -6,7 +6,7 @@ which are in `logit_stream.simulate`.
 | | |
 |---|---|
 | **[Estimation](estimation.md)** | |
-| `logit_stream`, `probit_stream` | binary logit and probit, with any number of fixed effects (hdfe-stream's `feglm_stream`) |
+| `logit_stream`, `probit_stream` | binary logit and probit, with any number of fixed effects (with at most one through this package's own engine, otherwise hdfe-stream's `feglm_stream`) |
 | `mlogit_stream` | multinomial logit, with absorbed fixed effects or random intercepts |
 | `ologit_stream`, `oprobit_stream` | ordered logit and probit, with an absorbed fixed effect (or, for the logit, random intercepts) |
 | `clogit_stream` | conditional (McFadden) logit on long-format choice data |

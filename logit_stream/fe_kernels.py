@@ -186,8 +186,8 @@ class OrderedPass:
                          self.cuts, self.eff, self.keep, f, blk["y"],
                          empty if w is None else np.ascontiguousarray(w, np.float64),
                          empty if off is None else np.ascontiguousarray(off, np.float64),
-                         m.link.name == "probit", bool(self.hessian), starts, ll_t, g_t, A_t,
-                         XC_t, CC_t, self.ga, self.Haa, self.Bg)
+                         m.link.name == "probit", m.hmode(self.hessian), starts, ll_t, g_t,
+                         A_t, XC_t, CC_t, self.ga, self.Haa, self.Bg)
         ll = float(ll_t.sum())
         if not np.isfinite(ll):
             return -np.inf

@@ -34,6 +34,7 @@ from .newton import _Driver
 from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
 from .results import (
     BinaryLogitResult,
+    BinaryProbitResult,
     ConditionalFELogitResult,
     ConditionalLogitResult,
     LogitMulti,
@@ -368,7 +369,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             except (TypeError, ValueError):
                 ok = False
             if not ok:
-                raise ValueError(f"{spec.fml}: logit needs a dependent variable of 0s and 1s; "
+                raise ValueError(f"{spec.fml}: {link} needs a dependent variable of 0s and 1s; "
                                  f"its values are {list(p0.levels)[:6]}")
         xnames = [nm for nm, _ in spec.x]
         K = len(xnames)
@@ -438,6 +439,14 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                      "standard errors are not meaningful at the boundary.", logger)
         else:
             fit = driver.run(theta0, spec.fml)
+        if binary and link == "probit":
+            # the variances use the expected information, as an IRLS fit's do
+            # (for the logit it is the observed one)
+            model.expected = True
+            ll_e, _, H_e = driver.objective(fit.theta, hessian=True)
+            if H_e is None:
+                raise RuntimeError(f"{spec.fml}: the information at the estimates is not finite")
+            fit.H = H_e
         names = model.names()
         P = len(names)
         N = p0.wsum if weights_type == "fweights" else (
@@ -567,7 +576,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       vcov_type=vkey, df_t=df_t, n_obs=int(N) if float(N).is_integer() else N,
                       all_vcovs=all_vcovs, n_clusters=n_clusters, collin_vars=fit.dropped,
                       diagnostics=diagnostics, weights=weights, weights_type=weights_type,
-                      model=("binary logit" if binary else
+                      model=(f"binary {link}" if binary else
                              "ordered probit" if link == "probit" else _KINDS[kind]),
                       loglik=ll, loglik_null=ll0,
                       pseudo_r2=float(1 - ll / ll0) if ll0 else np.nan, aic=aic, bic=bic,
@@ -605,7 +614,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         elif kind == "ologit":
             if binary:
                 common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None else {})
-                res = BinaryLogitResult(**common, levels=list(p0.levels), family="logit",
+                cls = BinaryProbitResult if link == "probit" else BinaryLogitResult
+                res = cls(**common, levels=list(p0.levels), family=link,
                                         deviance=float(-2 * ll), k_fe=int(k_fe), _spec=rspec)
             else:
                 cls = OrderedProbitResult if link == "probit" else OrderedLogitResult

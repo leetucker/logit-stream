@@ -434,6 +434,17 @@ def _ord_terms(a, b, probit, hessian):
             fpb = fb * (1.0 - 2.0 * Fb)
         haa = fpa / Pr - ga * ga
         hbb = -fpb / Pr - gb * gb
+        if hessian == 2:
+            # the expected information of a binary outcome (one cutpoint): its
+            # second derivative averaged over the two outcomes is -f^2 / (F S)
+            # at the finite limit, whichever level the row has
+            if b == -np.inf:
+                haa = -fa * fa / (Fa * Sa)
+                hbb = 0.0
+            else:
+                haa = 0.0
+                hbb = -fb * fb / (Fb * Sb)
+            return Pr, ga, gb, haa, hbb, 0.0
     return Pr, ga, gb, haa, hbb, -ga * gb
 
 
@@ -1089,6 +1100,13 @@ class _Ordered(_Model):
         self.J = len(levels)
         self.C = self.J - 1                 # cutpoints
         self.fix_first = False              # cut1 = 0 (with an absorbed fixed effect)
+        self.expected = False               # the information is the expected one (binary)
+
+    def hmode(self, hessian):
+        """The passes' `hessian` argument: 0 without the information, 1 for the
+        observed one, 2 for the expected one (the binary probit's variance,
+        as for an IRLS fit; the logit's two are equal)."""
+        return (2 if self.expected else 1) if hessian else 0
 
     @property
     def n_cuts(self):
@@ -1170,6 +1188,12 @@ class _Ordered(_Model):
         haa = fpa / P - ga ** 2
         hbb = -fpb / P - gb ** 2
         hab = -ga * gb
+        if self.expected:                   # binary: -f^2 / (F S) at the finite limit
+            lowest = y == 0
+            x = np.where(lowest, a, b)
+            fx = np.where(lowest, fa, fb)
+            ex = -(fx * fx) / (self.link.cdf(x) * self.link.sf(x))
+            haa, hbb, hab = np.where(lowest, ex, 0.0), np.where(lowest, 0.0, ex), 0.0 * ga
         up, lo = y < C, y > 0
         iu, il = np.flatnonzero(up), np.flatnonzero(lo)
         Q = np.zeros((len(y), C))
@@ -1219,7 +1243,8 @@ class _Ordered(_Model):
                       np.asarray(cols, np.int64), np.ascontiguousarray(self.cuts(theta)), y,
                       empty if w is None else np.ascontiguousarray(w, np.float64),
                       empty if offset is None else np.ascontiguousarray(offset, np.float64),
-                      self.link.name == "probit", bool(hessian), use_nnz, ll_t, g_t, A_t, XC_t,
+                      self.link.name == "probit", self.hmode(hessian), use_nnz, ll_t, g_t, A_t,
+                      XC_t,
                       CC_t)
         ll = float(ll_t.sum())
         if not np.isfinite(ll):

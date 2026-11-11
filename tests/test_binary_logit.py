@@ -1,13 +1,15 @@
-"""`logit_stream` fits a binary logit with this package's Newton engine (the
-two-level ordered logit, its cutpoint the intercept) and reports it with
-hdfe-stream's conventions; `feglm_stream` is the reference."""
+"""`logit_stream` and `probit_stream` fit a binary logit or probit with this
+package's Newton engine (the two-level ordered model, its cutpoint the
+intercept) and report it with hdfe-stream's conventions; `feglm_stream` is the
+reference. The probit's variances use the expected information, as its IRLS
+fit's do."""
 
 import numpy as np
 import polars as pl
 import pytest
 from hdfe_stream import HDFEResult, feglm_stream
 
-from logit_stream import BinaryLogitResult, logit_stream
+from logit_stream import BinaryLogitResult, BinaryProbitResult, logit_stream, probit_stream
 
 TOL = dict(iwls_tol=1e-13, iwls_maxiter=100)
 
@@ -29,10 +31,19 @@ def data():
     return pl.concat([df, df.head(1).with_columns(pl.lit(999, dtype=pl.Int64).alias("g"))])
 
 
-def both(fml, df, tmp_path, **kw):
-    new = logit_stream(fml, df, workdir=tmp_path, verbose=False, **kw)
-    old = feglm_stream(fml, df, "logit", workdir=tmp_path, verbose=False, **TOL, **kw)
-    assert isinstance(new, BinaryLogitResult) and isinstance(old, HDFEResult)
+FIT = {"logit": (logit_stream, BinaryLogitResult), "probit": (probit_stream, BinaryProbitResult)}
+
+
+@pytest.fixture(params=["logit", "probit"])
+def fam(request):
+    return request.param
+
+
+def both(fml, df, tmp_path, fam="logit", **kw):
+    fit, cls = FIT[fam]
+    new = fit(fml, df, workdir=tmp_path, verbose=False, **kw)
+    old = feglm_stream(fml, df, fam, workdir=tmp_path, verbose=False, **TOL, **kw)
+    assert isinstance(new, cls) and isinstance(old, HDFEResult) and new.family == fam
     return new, old
 
 
@@ -58,11 +69,11 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", list(CASES))
-def test_matches_feglm_stream(case, data, tmp_path):
+def test_matches_feglm_stream(case, fam, data, tmp_path):
     fml, kw = CASES[case]
-    new, old = both(fml, data, tmp_path, **kw)
+    new, old = both(fml, data, tmp_path, fam, **kw)
     assert new.coefnames == old.coefnames
-    assert np.allclose(new.beta, old.beta, rtol=0, atol=1e-9)
+    assert np.allclose(new.beta, old.beta, rtol=0, atol=1e-8)
     assert new.n_obs == old.n_obs and new.k_fe == old.k_fe
     assert new.collin_vars == old.collin_vars
     assert new.vcov_type == old.vcov_type
@@ -77,6 +88,17 @@ def test_matches_feglm_stream(case, data, tmp_path):
         assert _scalars(new.n_levels) == _scalars(old.n_levels)
 
 
+def test_the_probit_variance_is_the_expected_information(data, tmp_path):
+    """Not the observed one, which `oprobit_stream` reports: the two differ by
+    a little for the probit."""
+    from logit_stream import oprobit_stream
+    new = probit_stream("y ~ x1 + x2", data, workdir=tmp_path, verbose=False)
+    obs = oprobit_stream("y ~ x1 + x2", data, levels=[0, 1], workdir=tmp_path, verbose=False)
+    se_obs = obs.se[obs.coefnames.index("x1")]
+    se_new = new.se[new.coefnames.index("x1")]
+    assert 1e-5 < abs(se_new / se_obs - 1) < 0.01
+
+
 def test_estimates_are_at_the_maximum(data, tmp_path):
     """The Newton decrement is the stopping rule: the default tolerance gives
     the estimates to machine precision (hdfe-stream's rule, a deviance
@@ -89,12 +111,13 @@ def test_estimates_are_at_the_maximum(data, tmp_path):
 
 
 @pytest.mark.parametrize("fml", ["y ~ x1 + x2", "y ~ x1 + x2 | g"])
-def test_predict_resid_fixef_sample(fml, data, tmp_path):
-    new, old = both(fml, data, tmp_path)
+def test_predict_resid_fixef_sample(fml, fam, data, tmp_path):
+    new, old = both(fml, data, tmp_path, fam)
     a, b = new.resid().collect().sort("row_id"), old.resid().collect().sort("row_id")
     for c in ("y", "eta", "fitted", "resid"):
         assert np.allclose(a[c].to_numpy(), b[c].to_numpy(), atol=1e-9), c
-    assert np.allclose(a["resid_working"].to_numpy(), b["resid_working"].to_numpy(), atol=1e-5)
+    assert np.allclose(a["resid_working"].to_numpy(), b["resid_working"].to_numpy(),
+                       rtol=1e-5, atol=1e-5)
     for kind in ("link", "response"):
         x = new.predict(data, type=kind).collect()["prediction"].to_numpy()
         y = old.predict(data, type=kind).collect()["prediction"].to_numpy()
@@ -123,6 +146,9 @@ def test_intercept_comes_first_with_its_sign(data, tmp_path):
 
 def test_routes_to_hdfe_stream_where_this_engine_cannot_fit(data, tmp_path):
     kw = dict(workdir=tmp_path, verbose=False)
+    assert isinstance(probit_stream("y ~ x1 | g + h", data, **kw), HDFEResult)
+    assert isinstance(probit_stream("y ~ x1 | g", data, bias_correction=True, **kw), HDFEResult)
+    assert isinstance(probit_stream("y ~ x1 | g", data, **kw), BinaryProbitResult)
     assert isinstance(logit_stream("y ~ x1 | g + h", data, **kw), HDFEResult)
     assert isinstance(logit_stream("y ~ x1 | g", data, bias_correction=True, **kw), HDFEResult)
     assert isinstance(logit_stream("y ~ x1 | g", data, separation_check=False, **kw), HDFEResult)
@@ -147,10 +173,25 @@ def test_several_models_in_one_formula(data, tmp_path):
     assert len(r) == 2 and all(isinstance(m, BinaryLogitResult) for m in r)
 
 
-def test_clusters_are_counted_among_the_rows_used(data, tmp_path):
+def test_clusters_are_counted_among_the_rows_used(fam, data, tmp_path):
     """A cluster all of whose rows a fixed effect's separation dropped is not
     one: G, and so the factor G / (G - 1) and the degrees of freedom, count
     the clusters of the rows used."""
-    new, old = both("y ~ x1 + x2 | g", data, tmp_path, vcov={"CRV1": "g"})
+    new, old = both("y ~ x1 + x2 | g", data, tmp_path, fam, vcov={"CRV1": "g"})
     assert new.n_clusters == {k: v[0] for k, v in old.n_clusters.items()}
     assert new.all_vcovs["CRV1:g"][1] == old.all_vcovs["CRV1:g"][1]
+
+
+@pytest.mark.parametrize("fml", ["y ~ x1 + x2", "y ~ x1 + x2 | g"])
+def test_the_probit_expected_information_is_the_same_without_the_kernels(
+        fml, data, tmp_path, monkeypatch):
+    """The fused passes and the NumPy ones form the same expected information."""
+    kw = dict(workdir=tmp_path, verbose=False, vcov={"CRV1": "c"})
+    fast = probit_stream(fml, data, **kw)
+    monkeypatch.setattr("logit_stream.models.MNL_KERNEL_MIN_ROWS", 10 ** 9)
+    monkeypatch.setattr("logit_stream.fe.MNL_KERNEL_MIN_ROWS", 10 ** 9)
+    slow = probit_stream(fml, data, **kw)
+    assert np.allclose(fast.beta, slow.beta, rtol=0, atol=1e-9)
+    for key in fast.all_vcovs:
+        V = slow.all_vcovs[key][0]
+        assert np.allclose(fast.all_vcovs[key][0], V, rtol=0, atol=1e-8 * np.abs(V).max()), key

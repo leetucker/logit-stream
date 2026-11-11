@@ -199,16 +199,22 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
     conventions for the variance; it is also the way to Firth's penalized
     likelihood for a binary outcome (``firth=True``).
     """
+    return _binary_fit("logit", fml, data, workdir, vcov, cluster, options)
+
+
+def _binary_fit(family, fml, data, workdir, vcov, cluster, options):
+    """A binary logit or probit: this package's fit where it can, else
+    hdfe-stream's `feglm_stream`."""
     route = _binary_route(vcov, cluster, options)
     if route is not None:
         from .estimator import _fit, _NeedsHdfe
         try:
             return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
-                        _binary=True, **route)
+                        _binary=True, link=family, **route)
         except _NeedsHdfe:
             pass
     from hdfe_stream import feglm_stream
-    return feglm_stream(fml, data, "logit", workdir=workdir, vcov=vcov, cluster=cluster,
+    return feglm_stream(fml, data, family, workdir=workdir, vcov=vcov, cluster=cluster,
                         **options)
 
 
@@ -277,12 +283,12 @@ def probit_stream(fml: str, data: Source, workdir: PathLike | None = None,
                   vcov: Vcov = "iid", cluster: Sequence[str] | str = (),
                   **options: Any):
     """Out-of-core binary probit, with any number of high-dimensional fixed
-    effects: hdfe-stream's `hdfe_stream.feglm_stream` with
-    ``family="probit"``, as `logit_stream` is with ``family="logit"`` (see
-    there: the options, the result, the bias correction)."""
-    from hdfe_stream import feglm_stream
-    return feglm_stream(fml, data, "probit", workdir=workdir, vcov=vcov, cluster=cluster,
-                        **options)
+    effects: as `logit_stream` (see there: the options, the routing, the
+    bias correction), with the standard normal in place of the logistic. With
+    no fixed effect or one the fit is this package's, the two-level ordered
+    probit's Newton iterations, reported as a `BinaryProbitResult`; its
+    variances use the expected information, as `feglm_stream`'s do."""
+    return _binary_fit("probit", fml, data, workdir, vcov, cluster, options)
 
 
 def cfelogit_stream(fml: str, data: Source, workdir: PathLike | None = None,

@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 from hdfe_stream.core.results_base import RegressionMulti, RegressionResult
+from scipy import special
 
 from .models import LINKS
 from .store import check_source
@@ -751,6 +752,17 @@ class BinaryLogitResult(OrderedLogitResult):
     deviance: float = np.nan
     k_fe: int = 0
 
+    @staticmethod
+    def _mu(eta: pl.Expr) -> pl.Expr:
+        """The probability that the outcome is 1, given the linear predictor."""
+        return 1.0 / (1.0 + (-eta).exp())
+
+    @staticmethod
+    def _mu_eta(eta: pl.Expr) -> pl.Expr:
+        """Its derivative in the linear predictor."""
+        mu = 1.0 / (1.0 + (-eta).exp())
+        return mu * (1.0 - mu)
+
     def _model_lines(self):
         return [f"obs: {self.n_obs:,}   outcome {self.depvar}: binary"]
 
@@ -816,7 +828,7 @@ class BinaryLogitResult(OrderedLogitResult):
         if type == "link":
             val = eta
         elif type == "response":
-            val = 1.0 / (1.0 + (-eta).exp())
+            val = self._mu(eta)
         else:
             val = pl.when(eta.is_null()).then(None).otherwise((eta > 0).cast(pl.Int64))
         keep = [c for c in out.collect_schema().names() if c not in ("xb", "eta")
@@ -836,13 +848,34 @@ class BinaryLogitResult(OrderedLogitResult):
                              *MultinomialLogitResult._input_columns(self, frame))
         out = self._linear(frame)
         eta, y = pl.col("eta"), pl.col(self.depvar).cast(pl.Float64)
-        mu = (1.0 / (1.0 + (-eta).exp())).alias("fitted")
-        out = out.with_columns(mu).with_columns((y - pl.col("fitted")).alias("resid"))
-        out = out.with_columns((pl.col("resid") / (pl.col("fitted") * (1.0 - pl.col("fitted"))))
-                               .alias("resid_working"))
+        out = out.with_columns(self._mu(eta).alias("fitted"))
+        out = out.with_columns((y - pl.col("fitted")).alias("resid"))
+        out = out.with_columns((pl.col("resid") / self._mu_eta(eta)).alias("resid_working"))
         extra = ["fe_" + self.fe_names[0]] if self.fe_names else []
         return out.select("row_id", self.depvar, "xb", "eta", "fitted", "resid",
                           "resid_working", *extra)
+
+
+@dataclass(kw_only=True)
+class BinaryProbitResult(BinaryLogitResult):
+    """The result of `probit_stream`: a binary probit, fitted as the two-level
+    ordered probit. As `BinaryLogitResult`, with the standard normal in place
+    of the logistic distribution: ``family`` is ``"probit"``, predicted
+    probabilities are Phi(eta), and ``resid_working`` is resid / phi(eta).
+    The variances use the expected information, as an iteratively
+    reweighted fit's do (the observed one differs from it for the probit).
+    """
+
+    family: str = "probit"
+
+    @staticmethod
+    def _mu(eta: pl.Expr) -> pl.Expr:
+        return eta.map_batches(lambda s: pl.Series(s.name, special.ndtr(s.to_numpy()))
+                               .fill_nan(None), return_dtype=pl.Float64, is_elementwise=True)
+
+    @staticmethod
+    def _mu_eta(eta: pl.Expr) -> pl.Expr:
+        return (-0.5 * eta * eta).exp() / math.sqrt(2.0 * math.pi)
 
 
 @dataclass(kw_only=True)
