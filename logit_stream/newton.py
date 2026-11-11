@@ -34,6 +34,8 @@ import scipy.linalg as sla
 from hdfe_stream.core.report import warn
 from hdfe_stream.core.utils import single_blas as _single_blas
 
+from . import meat_kernels
+
 _HALVINGS = 12
 COLLIN_TOL = 1e-10
 
@@ -475,7 +477,10 @@ class _Driver:
         M = np.zeros((P, P)) if hetero else None
         U = {name: np.zeros((G, P)) for name, (_, G) in clusters.items()}
         rows = self._rows(scores=True)
+        kp = meat_kernels.make(self, theta, weights_type, clusters, hetero)
         for blk in self.store:
+            if kp is not None and len(blk["y"]) >= meat_kernels.min_rows() and kp.add(blk):
+                continue
             for ch in _chunks(blk, rows):
                 X = _design(ch, m.cols, self.K0)
                 S = m.scores(theta, X, ch["y"], ch.get("starts"), offset=ch.get("off"))
@@ -485,6 +490,12 @@ class _Driver:
                     w = None if w is None else w[st]
                     cl = None if cl is None else cl[st]
                 self._add_meat(S, w, cl, weights_type, M, U, clusters)
+        if kp is not None:
+            Mk, Uk = kp.result()
+            if hetero:
+                M += Mk
+            for name, u in Uk.items():
+                U[name] += u
         return M, U
 
     def cluster_information(self, theta, col, G):

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Robust and clustered variances of the multinomial and ordered logit (without a fixed effect) are
+  3-12 times faster.** The extra pass that forms the variance's middle matrices is now a fused parallel
+  kernel: each row's score is formed in registers, added to the outer-product sums for `hetero` and to
+  each clustering's cluster sums, with no array of scores and no sorting by cluster (1 million rows
+  and 10 covariates: `hetero` 0.45 s, now 0.13 s; 2,000 clusters 0.9 s, now 0.12 s; 200,000 clusters
+  1.4 s, now 0.3 s). The variances are the same. Fits with an absorbed fixed effect keep the previous
+  pass.
 - **The multinomial and ordered logit with an absorbed fixed effect are 2-4 times faster.** Each
   pass over the data is now a fused parallel kernel, 4-11 times faster per pass (1 million rows,
   500 groups: 0.8 s per pass for the multinomial logit, now 0.2 s; 0.6 s for the ordered logit,
