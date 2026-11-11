@@ -130,8 +130,10 @@ class _Driver:
         ll, g, H = 0.0, np.zeros(m.P), (np.zeros((m.P, m.P)) if hessian else None)
         rows = self._rows()
         full = getattr(m, "accumulate_full", None)
+        full_ok = getattr(m, "kernel_ok", None)
         for blk in self.store:
-            if full is not None and firth_A is None:
+            if full is not None and firth_A is None and (
+                    full_ok is None or full_ok(len(blk["y"]))):
                 # a numba pass over the whole block, on its columns in place
                 l, gg, hh = full(theta, blk["X"], m.cols, blk["y"], blk.get("w"),
                                  blk.get("starts"), hessian, offset=blk.get("off"))

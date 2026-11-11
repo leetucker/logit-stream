@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The multinomial logit (without fixed effects) is about 5 times faster on dense designs and
+  1.3-1.8 times faster on designs of indicators.** Each pass over the data is now one parallel
+  numba kernel that computes the probabilities, log-likelihood, gradient and information row
+  by row, as the conditional logit's does, so all threads stay busy and no row-sized
+  temporaries are allocated (1 million rows, 5 equations of 7 covariates: 1.0 s per pass, now
+  0.15 s). The estimates are the same. The information comes from each row's outer product, or,
+  for a design with 20% or fewer nonzero entries, from its nonzeros. Dense designs of more than
+  96 columns keep the previous BLAS-based pass.
 - **`mlogit_stream(own_covariates=...)`: covariates that enter only their own level's equation.**
   For example, each group's baseline share can predict that group alone, leaving out the other
   groups' shares. This drops the off-diagonal coefficients, which are often poorly determined

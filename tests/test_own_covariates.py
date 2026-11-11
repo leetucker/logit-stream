@@ -71,9 +71,9 @@ FML = "y ~ x1 + C(g)"
 @pytest.mark.parametrize("sparse", [False, True])
 def test_matches_direct_maximization(data, monkeypatch, sparse):
     if sparse:
-        monkeypatch.setattr(models, "SPARSE_DENSITY", 1.01)
+        monkeypatch.setattr(models, "MNL_NNZ_DENSITY", 1.01)
     else:
-        monkeypatch.setattr(models, "SPARSE_DENSITY", -1.0)
+        monkeypatch.setattr(models, "MNL_NNZ_DENSITY", -1.0)
     fit = mlogit_stream(FML, data, levels=LEVELS, own_covariates=OWN, verbose=False,
                         tol=1e-12)
     th, ll = _direct(data)
@@ -109,9 +109,9 @@ def test_information_is_the_hessian(data):
 
 
 def test_dense_and_sparse_agree(data, monkeypatch):
-    monkeypatch.setattr(models, "SPARSE_DENSITY", -1.0)
+    monkeypatch.setattr(models, "MNL_NNZ_DENSITY", -1.0)
     a = mlogit_stream(FML, data, levels=LEVELS, own_covariates=OWN, verbose=False)
-    monkeypatch.setattr(models, "SPARSE_DENSITY", 1.01)
+    monkeypatch.setattr(models, "MNL_NNZ_DENSITY", 1.01)
     b = mlogit_stream(FML, data, levels=LEVELS, own_covariates=OWN, verbose=False)
     np.testing.assert_allclose(a.beta, b.beta, rtol=1e-7, atol=1e-9)
     np.testing.assert_allclose(a.vcov, b.vcov, rtol=1e-6, atol=1e-10)
