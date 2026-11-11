@@ -262,6 +262,12 @@ def _ordered_table_lbfgs(n, link):
     return float(-res.fun)
 
 
+# The fused variance pass forms each row's score as a vector of P slopes' entries and
+# adds its outer product: P^2 / 2 per row, BLAS's product of the scores' matrix is
+# better beyond this many
+FE_MEAT_MAX_P = 256
+
+
 class _AbsorbedFE:
     """The fixed effect's bookkeeping, passes and linear algebra for the
     Newton driver (see the module docstring)."""
@@ -601,7 +607,10 @@ class _AbsorbedFE:
         Mt = np.zeros((P, P)) if hetero else None
         U = {name: np.zeros((Gc, P)) for name, (_, Gc) in clusters.items()}
         rows = max(256, int(driver.chunk_bytes // (8 * max(P * (J + 1), 1))))
+        kp = self._meat_kernel(theta, A, H, weights_type, clusters, hetero)
         for blk in self.store:
+            if kp is not None and len(blk["y"]) >= MNL_KERNEL_MIN_ROWS and kp.add(blk):
+                continue
             for ch in _chunks(blk, rows):
                 keep = self.keep_g[ch["fe"]]
                 if not keep.all():
@@ -628,7 +637,24 @@ class _AbsorbedFE:
                     s = m.rows(th, X, y, None, offset=o, hessian=False)["s"]
                     S = St - s[:, None] * H.BD[f, 0, :]
                 driver._add_meat(S, ch.get("w"), ch.get("cl"), weights_type, Mt, U, clusters)
+        if kp is not None:
+            Mk, Uk = kp.result()
+            if hetero:
+                Mt += Mk
+            for name, u in Uk.items():
+                U[name] += u
         return Mt, U
+
+    def _meat_kernel(self, theta, A, H, weights_type, clusters, hetero):
+        """The fused variance pass (fe_kernels.py) over the blocks big enough,
+        or None: with the rows grouped by the fixed effect and the same design
+        limits as the passes, and not so many slopes that BLAS's product of the
+        scores wins (`FE_MEAT_MAX_P`)."""
+        if not self.kernel_ok() or not (hetero or clusters) or self.model.P > FE_MEAT_MAX_P:
+            return None
+        cls = fe_kernels.MultinomialFEMeat if self.model.kind == "mlogit" \
+            else fe_kernels.OrderedFEMeat
+        return cls(self, theta, A, H, weights_type, clusters, hetero)
 
     # ------------------------------------------------------------ results
     def result_spec(self, theta):

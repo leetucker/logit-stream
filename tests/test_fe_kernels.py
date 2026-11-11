@@ -165,3 +165,73 @@ def test_the_tall_product_equals_the_plain_one():
     A, B = rng.normal(size=(90_000, 7)), rng.normal(size=(90_000, 5))
     np.testing.assert_allclose(_tall_product(A, B), A.T @ B, rtol=1e-10, atol=1e-9)
     np.testing.assert_allclose(_tall_product(A[:100], B[:100]), A[:100].T @ B[:100])
+
+
+# ------------------------------------------------- the variances, with a fixed effect
+VCASES = {
+    "mlogit hetero": (mlogit_stream, f"ym ~ {RHS} | g", dict(levels=list("0123"), vcov="hetero")),
+    "mlogit two-way, analytic weights": (
+        mlogit_stream, f"ym ~ {RHS} | g",
+        dict(levels=list("0123"), vcov={"CRV1": "cl+cl2"}, weights="w")),
+    "mlogit hetero, frequency weights": (
+        mlogit_stream, f"ym ~ {RHS} | g",
+        dict(levels=list("0123"), vcov="hetero", weights="w", weights_type="fweights")),
+    "mlogit many clusters": (mlogit_stream, f"ym ~ {RHS} | g",
+                             dict(levels=list("0123"), vcov={"CRV1": "clmany"})),
+    "ologit hetero": (ologit_stream, f"yo ~ {RHS} | g", dict(vcov="hetero")),
+    "ologit CRV1, offset": (ologit_stream, f"yo ~ {RHS} | g",
+                            dict(vcov={"CRV1": "cl"}, offset="o")),
+    "ologit two-way, frequency weights": (
+        ologit_stream, f"yo ~ {RHS} | g",
+        dict(vcov={"CRV1": "cl+cl2"}, weights="w", weights_type="fweights")),
+    "oprobit analytic weights, hetero": (oprobit_stream, f"yo ~ {RHS} | g",
+                                         dict(vcov="hetero", weights="w")),
+}
+
+
+@pytest.fixture(scope="module")
+def vdata(data):
+    rng = np.random.default_rng(41)
+    return data.with_columns(cl2=pl.Series(rng.integers(0, 9, data.height)),
+                             clmany=pl.Series(rng.integers(0, 20_000, data.height)))
+
+
+def _count_meat(monkeypatch):
+    calls = {"n": 0}
+    for cls in (FK.MultinomialFEMeat, FK.OrderedFEMeat):
+        add = cls.add
+
+        def spy(self, blk, add=add):
+            calls["n"] += 1
+            return add(self, blk)
+        monkeypatch.setattr(cls, "add", spy)
+    return calls
+
+
+@pytest.mark.parametrize("owner", [False, True], ids=["copies per part", "owned clusters"])
+@pytest.mark.parametrize("name", list(VCASES))
+def test_grouped_variance_kernels_equal_the_numpy_pass(vdata, monkeypatch, name, owner):
+    import logit_stream.meat_kernels as MK
+    fn, fml, kw = VCASES[name]
+    calls = _count_meat(monkeypatch)
+    if owner:
+        monkeypatch.setattr(MK, "MEAT_CLUSTER_MB", 1e-6)
+    kw = dict(verbose=False, tol=1e-13, **kw)
+    with pytest.warns(UserWarning, match="never varies"):
+        fast = fn(fml, vdata, **kw)
+    assert calls["n"] >= 1
+    calls["n"] = 0
+    monkeypatch.setattr(est, "SORT_FE", False)
+    with pytest.warns(UserWarning, match="never varies"):
+        ref = fn(fml, vdata, **kw)
+    assert calls["n"] == 0
+    np.testing.assert_allclose(fast.vcov, ref.vcov, rtol=1e-8, atol=1e-14)
+    np.testing.assert_allclose(fast.se, ref.se, rtol=1e-8)
+
+
+def test_the_variance_pass_keeps_the_numpy_code_for_many_slopes(vdata, monkeypatch):
+    import logit_stream.fe as fe_mod
+    calls = _count_meat(monkeypatch)
+    monkeypatch.setattr(fe_mod, "FE_MEAT_MAX_P", 3)
+    ologit_stream(f"yo ~ {RHS} | g", vdata, vcov="hetero", verbose=False)
+    assert calls["n"] == 0

@@ -392,3 +392,336 @@ class MultinomialPass:
             pos = np.tile(np.arange(K, dtype=np.int64), (J1, 1))
             Htt += _assemble_tri(self.acc, pos, np.full(J1, K, np.int64),
                                  np.arange(J1 + 1, dtype=np.int64) * K, K)
+
+
+# ------------------------------------------------- the variances, with a fixed effect
+# A row's score for the slopes, net of the part the fixed effects absorb
+# (fe.py, `_AbsorbedFE.meat`): s_b - H_bg H_gg^-1 s_g, with BD[g] = H_gg^-1 H_gb
+# the group's block. One dense vector of P entries per row, formed while the
+# group's block is hot (the rows are grouped), and added to the outer-product
+# sums and to each clustering's cluster sums, as meat_kernels.py does without
+# a fixed effect.
+
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _mnl_fe_score(X, i, colmap, theta, Arow, frow, BDg, yi, u, E, p, sv):
+    """Row i's concentrated score in `sv` (P entries, equation by equation):
+    R_j x for the J - 1 equations, less sum_l R_l free_gl BD[g, l, :]; R_l =
+    1[y = l] - p_l over all J levels, with the group's effects in the linear
+    predictors."""
+    J = len(Arow)
+    K = len(colmap)
+    P = (J - 1) * K
+    for c in range(K):
+        u[c] = X[i, colmap[c]]
+    E[0] = Arow[0]
+    m = E[0]
+    for j in range(1, J):
+        e = 0.0
+        o = (j - 1) * K
+        for c in range(K):
+            e += u[c] * theta[o + c]
+        E[j] = e + Arow[j]
+        if E[j] > m:
+            m = E[j]
+    s = 0.0
+    for j in range(J):
+        p[j] = np.exp(E[j] - m)
+        s += p[j]
+    inv = 1.0 / s
+    for j in range(J):
+        p[j] = (1.0 if yi == j else 0.0) - p[j] * inv            # R_j
+    for j in range(1, J):
+        o = (j - 1) * K
+        for c in range(K):
+            sv[o + c] = p[j] * u[c]
+    for l in range(J):
+        sa = p[l] * frow[l]
+        if sa != 0.0:
+            for k in range(P):
+                sv[k] -= sa * BDg[l, k]
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _mnl_fe_meat_pass(X, theta, colmap, A, free, BD, keep, f, y, w, wmode, cl, cloff, hetero,
+                      starts, M_t, U_t):
+    """The outer products of the concentrated scores (``M_t[t]``, upper
+    triangle, weighted by m: 1, w or w^2 for `wmode` 0, 2, 1) and the clusters'
+    sums (``U_t[t]``, weighted by w) over the parts of a block of rows grouped
+    by the fixed effect (`starts` cut at group boundaries)."""
+    J = A.shape[1]
+    K = len(colmap)
+    P = (J - 1) * K
+    ncl = cl.shape[1]
+    n_parts = len(starts) - 1
+    has_w = wmode > 0
+    for t in nb.prange(n_parts):
+        u = np.empty(K)
+        E = np.empty(J)
+        p = np.empty(J)
+        sv = np.empty(P)
+        M = np.zeros((P, P) if hetero else (0, 0))
+        for i in range(starts[t], starts[t + 1]):
+            gi = f[i]
+            if not keep[gi]:
+                continue
+            wi = w[i] if has_w else 1.0
+            _mnl_fe_score(X, i, colmap, theta, A[gi], free[gi], BD[gi], y[i], u, E, p, sv)
+            for k in range(ncl):
+                row = cloff[k] + cl[i, k]
+                for a in range(P):
+                    U_t[t, row, a] += wi * sv[a]
+            if hetero:
+                mw = 1.0 if wmode == 0 else (wi * wi if wmode == 1 else wi)
+                for a in range(P):
+                    x = mw * sv[a]
+                    for b in range(a, P):
+                        M[a, b] += x * sv[b]
+        if hetero:
+            M_t[t] = M
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _mnl_fe_cluster_pass(X, theta, colmap, A, free, BD, keep, f, y, w, has_w, code, bounds, U):
+    """`meat_kernels._mnl_cluster_pass` with a fixed effect: part t owns the
+    cluster codes ``bounds[t]`` to ``bounds[t + 1]``. (The rows are grouped by
+    the fixed effect, so a part's rows come in runs of one group, whose block
+    stays in cache.)"""
+    n = len(y)
+    J = A.shape[1]
+    K = len(colmap)
+    P = (J - 1) * K
+    n_parts = len(bounds) - 1
+    for t in nb.prange(n_parts):
+        lo = bounds[t]
+        hi = bounds[t + 1]
+        u = np.empty(K)
+        E = np.empty(J)
+        p = np.empty(J)
+        sv = np.empty(P)
+        for i in range(n):
+            c = code[i]
+            if c < lo or c >= hi:
+                continue
+            gi = f[i]
+            if not keep[gi]:
+                continue
+            wi = w[i] if has_w else 1.0
+            _mnl_fe_score(X, i, colmap, theta, A[gi], free[gi], BD[gi], y[i], u, E, p, sv)
+            for a in range(P):
+                U[c, a] += wi * sv[a]
+
+
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _ord_fe_score(X, i, colmap, theta, cuts, eff_g, offi, BDg, yi, probit, u, sv):
+    """Row i's concentrated score in `sv`: s x for the slopes, g_a at the cutpoint
+    above the row's level and g_b at the one below (the first cutpoint is fixed
+    at 0 and has no entry, so cutpoint c is at K + c - 1), less s BD[g, 0, :];
+    s = -(g_a + g_b)."""
+    K = len(colmap)
+    C = len(cuts)
+    P = K + C - 1
+    eta = eff_g + offi
+    for k in range(K):
+        u[k] = X[i, colmap[k]]
+        eta += u[k] * theta[k]
+    a = cuts[yi] - eta if yi < C else np.inf
+    b = cuts[yi - 1] - eta if yi > 0 else -np.inf
+    Pr, ga, gb, haa, hbb, hab = _ord_terms(a, b, probit, False)
+    s = -(ga + gb)
+    for k in range(K):
+        sv[k] = s * u[k] - s * BDg[k]
+    for q in range(C - 1):
+        sv[K + q] = -s * BDg[K + q]
+    if yi < C and yi >= 1:
+        sv[K + yi - 1] += ga
+    if yi > 0 and yi - 1 >= 1:
+        sv[K + yi - 2] += gb
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _ord_fe_meat_pass(X, theta, colmap, cuts, eff, BD, keep, f, y, w, off, wmode, probit, cl,
+                      cloff, hetero, starts, M_t, U_t):
+    """`_mnl_fe_meat_pass` for the ordered models (`BD` is G x P)."""
+    K = len(colmap)
+    C = len(cuts)
+    P = K + C - 1
+    ncl = cl.shape[1]
+    n_parts = len(starts) - 1
+    has_w = wmode > 0
+    has_off = len(off) > 0
+    for t in nb.prange(n_parts):
+        u = np.empty(K)
+        sv = np.empty(P)
+        M = np.zeros((P, P) if hetero else (0, 0))
+        for i in range(starts[t], starts[t + 1]):
+            gi = f[i]
+            if not keep[gi]:
+                continue
+            wi = w[i] if has_w else 1.0
+            _ord_fe_score(X, i, colmap, theta, cuts, eff[gi], off[i] if has_off else 0.0,
+                          BD[gi], y[i], probit, u, sv)
+            for k in range(ncl):
+                row = cloff[k] + cl[i, k]
+                for a in range(P):
+                    U_t[t, row, a] += wi * sv[a]
+            if hetero:
+                mw = 1.0 if wmode == 0 else (wi * wi if wmode == 1 else wi)
+                for a in range(P):
+                    x = mw * sv[a]
+                    for b in range(a, P):
+                        M[a, b] += x * sv[b]
+        if hetero:
+            M_t[t] = M
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _ord_fe_cluster_pass(X, theta, colmap, cuts, eff, BD, keep, f, y, w, off, has_w, probit,
+                         code, bounds, U):
+    n = len(y)
+    K = len(colmap)
+    C = len(cuts)
+    P = K + C - 1
+    has_off = len(off) > 0
+    n_parts = len(bounds) - 1
+    for t in nb.prange(n_parts):
+        lo = bounds[t]
+        hi = bounds[t + 1]
+        u = np.empty(K)
+        sv = np.empty(P)
+        for i in range(n):
+            c = code[i]
+            if c < lo or c >= hi:
+                continue
+            gi = f[i]
+            if not keep[gi]:
+                continue
+            wi = w[i] if has_w else 1.0
+            _ord_fe_score(X, i, colmap, theta, cuts, eff[gi], off[i] if has_off else 0.0,
+                          BD[gi], y[i], probit, u, sv)
+            for a in range(P):
+                U[c, a] += wi * sv[a]
+
+
+class _FEMeat:
+    """The variances' pass for an absorbed fixed effect, block by block: `add`
+    each block of grouped rows, then `result`. Like meat_kernels.py, the
+    clusters' sums are kept per part when the copies fit, else each part owns
+    a range of the cluster codes."""
+
+    def __init__(self, fe, theta, A, H, weights_type, clusters, hetero):
+        from . import meat_kernels as mk
+        self.mk = mk
+        m = fe.model
+        self.fe, self.m, self.hetero = fe, m, bool(hetero)
+        self.th = np.ascontiguousarray(theta[:m.P], np.float64)
+        self.keep = np.ascontiguousarray(fe.keep_g)
+        self.P = m.P
+        self.wmode = {"aweights": 1, "fweights": 2}[weights_type]
+        self.names = list(clusters)
+        self.cols = [clusters[nm][0] for nm in self.names]
+        self.sizes = [clusters[nm][1] for nm in self.names]
+        self.cloff = np.r_[0, np.cumsum(self.sizes)].astype(np.int64)
+        self.sumG = int(self.cloff[-1])
+        self.U = np.zeros((self.sumG, self.P))
+        self.Mt = np.zeros((self.P, self.P)) if hetero else None
+
+    def combined(self, n):
+        per = self.sumG * self.P * 8
+        return bool(self.sumG) and per * nb.get_num_threads() <= self.mk.MEAT_CLUSTER_MB * 1e6 \
+            and self.sumG * 8 <= n
+
+    def n_parts(self, n, combined):
+        parts = _parts(max(1, n // 256), int(np.sqrt(max(self.P * self.P, 1))))
+        if combined:
+            parts = min(parts, max(1, int(self.mk.MEAT_CLUSTER_MB * 1e6
+                                          // (self.sumG * self.P * 8))))
+        return parts
+
+    def owner_bounds(self, k):
+        return np.linspace(0, self.sizes[k], 4 * nb.get_num_threads() + 1).astype(np.int64)
+
+    def result(self):
+        U = {nm: self.U[self.cloff[k]:self.cloff[k + 1]] for k, nm in enumerate(self.names)}
+        M = None
+        if self.hetero:
+            M = np.triu(self.Mt) + np.triu(self.Mt, 1).T
+        return M, U
+
+    def _run(self, blk, call_parts, call_owner):
+        n = len(blk["y"])
+        f = np.ascontiguousarray(blk["fe"], np.int64)
+        combined = self.combined(n)
+        n_parts = self.n_parts(n, combined)
+        starts = part_starts(f, n_parts)
+        cl = (np.ascontiguousarray(blk["cl"][:, self.cols], np.int64) if self.names
+              else np.zeros((n, 0), np.int64))
+        P = self.P
+        M_t = np.zeros((n_parts, P, P) if self.hetero else (n_parts, 0, 0))
+        U_t = np.zeros((n_parts, self.sumG if combined else 0, P))
+        with nb.parallel_chunksize(1):
+            if self.hetero or combined:
+                call_parts(f, starts, cl if combined else cl[:, :0], M_t, U_t)
+            if not combined:
+                for k in range(len(self.names)):
+                    call_owner(f, np.ascontiguousarray(cl[:, k]), self.owner_bounds(k),
+                               self.U[self.cloff[k]:self.cloff[k + 1]])
+        if self.hetero:
+            self.Mt += M_t.sum(axis=0)
+        if combined:
+            self.U += U_t.sum(axis=0)
+        return True
+
+
+class MultinomialFEMeat(_FEMeat):
+    def __init__(self, fe, theta, A, H, weights_type, clusters, hetero):
+        super().__init__(fe, theta, A, H, weights_type, clusters, hetero)
+        self.A = np.ascontiguousarray(A, np.float64)
+        self.free = np.ascontiguousarray(fe.free, np.float64)
+        self.BD = np.ascontiguousarray(H.BD, np.float64)
+
+    def add(self, blk):
+        m = self.m
+        w = blk.get("w")
+        wv = np.empty(0) if w is None else np.ascontiguousarray(w, np.float64)
+        X = np.ascontiguousarray(blk["X"])
+        cols = np.asarray(m.cols, np.int64)
+        wmode = self.wmode if w is not None else 0
+
+        def parts(f, starts, cl, M_t, U_t):
+            _mnl_fe_meat_pass(X, self.th, cols, self.A, self.free, self.BD, self.keep, f,
+                              blk["y"], wv, wmode, cl, self.cloff, self.hetero, starts, M_t, U_t)
+
+        def owner(f, code, bounds, U):
+            _mnl_fe_cluster_pass(X, self.th, cols, self.A, self.free, self.BD, self.keep, f,
+                                 blk["y"], wv, w is not None, code, bounds, U)
+        return self._run(blk, parts, owner)
+
+
+class OrderedFEMeat(_FEMeat):
+    def __init__(self, fe, theta, A, H, weights_type, clusters, hetero):
+        super().__init__(fe, theta, A, H, weights_type, clusters, hetero)
+        m = fe.model
+        self.cuts = np.ascontiguousarray(m.cuts(self.th))
+        self.eff = np.ascontiguousarray(A[:, 0], np.float64)
+        self.BD = np.ascontiguousarray(H.BD[:, 0, :], np.float64)
+
+    def add(self, blk):
+        m = self.m
+        w, off = blk.get("w"), blk.get("off")
+        empty = np.empty(0)
+        wv = empty if w is None else np.ascontiguousarray(w, np.float64)
+        ov = empty if off is None else np.ascontiguousarray(off, np.float64)
+        X = np.ascontiguousarray(blk["X"])
+        cols = np.asarray(m.cols, np.int64)
+        wmode = self.wmode if w is not None else 0
+        probit = m.link.name == "probit"
+
+        def parts(f, starts, cl, M_t, U_t):
+            _ord_fe_meat_pass(X, self.th, cols, self.cuts, self.eff, self.BD, self.keep, f,
+                              blk["y"], wv, ov, wmode, probit, cl, self.cloff, self.hetero,
+                              starts, M_t, U_t)
+
+        def owner(f, code, bounds, U):
+            _ord_fe_cluster_pass(X, self.th, cols, self.cuts, self.eff, self.BD, self.keep, f,
+                                 blk["y"], wv, ov, w is not None, probit, code, bounds, U)
+        return self._run(blk, parts, owner)
