@@ -20,7 +20,7 @@ fit.predict("people/*.parquet").sink_parquet("imputed.parquet")   # lazily
 
 | | |
 |---|---|
-| `logit_stream`, `probit_stream` | binary logit and probit with any number of fixed effects ([hdfe-stream](https://github.com/leetucker/hdfe-stream)'s `feglm_stream`) |
+| `logit_stream`, `probit_stream` | binary logit and probit with any number of fixed effects (with at most one through this package's own engine, otherwise [hdfe-stream](https://github.com/leetucker/hdfe-stream)'s `feglm_stream`) |
 | `mlogit_stream` | multinomial logit (any number of fixed effects; several through a Poisson regression) |
 | `ologit_stream`, `oprobit_stream` | ordered logit and probit |
 | `clogit_stream` | conditional (McFadden) logit on long-format choice data |

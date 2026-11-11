@@ -184,16 +184,78 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
 
     Notes
     -----
-    Two conventions are hdfe-stream's (and pyfixest's) rather than this
-    package's: convergence is judged on the relative change in deviance
-    (``iwls_tol``), and the iid vcov has the factor (N - 1) / (N - K).
+    With no fixed effect or one, and none of hdfe-stream's options that have
+    no counterpart here (``bias_correction``, ``bootcluster``, a CRV3
+    variance, the separation check switched off, ...), the fit is this
+    package's: the two-level ordered logit's Newton iterations over the
+    stored blocks (see `ologit_stream`), reported as a `BinaryLogitResult`
+    with hdfe-stream's conventions for the variance (the iid vcov has the
+    factor (N - 1) / (N - K)) and for the coefficients (``Intercept`` first).
+    It converges on the Newton decrement (``iwls_tol``, if given, is that
+    tolerance; default 1e-8), so the estimates are at the maximum to machine
+    precision. Otherwise the fit is hdfe-stream's, `feglm_stream`, whose
+    convergence is judged on the relative change in deviance.
     A two-level `mlogit_stream` fits the same model, with this package's
-    conventions, but absorbs at most one fixed effect; it is also the way
-    to Firth's penalized likelihood for a binary outcome (``firth=True``).
+    conventions for the variance; it is also the way to Firth's penalized
+    likelihood for a binary outcome (``firth=True``).
     """
+    return _binary_fit("logit", fml, data, workdir, vcov, cluster, options)
+
+
+def _binary_fit(family, fml, data, workdir, vcov, cluster, options):
+    """A binary logit or probit: this package's fit where it can, else
+    hdfe-stream's `feglm_stream`."""
+    route = _binary_route(vcov, cluster, options)
+    if route is not None:
+        from .estimator import _fit, _NeedsHdfe
+        try:
+            return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
+                        _binary=True, link=family, **route)
+        except _NeedsHdfe:
+            pass
     from hdfe_stream import feglm_stream
-    return feglm_stream(fml, data, "logit", workdir=workdir, vcov=vcov, cluster=cluster,
+    return feglm_stream(fml, data, family, workdir=workdir, vcov=vcov, cluster=cluster,
                         **options)
+
+
+# options of hdfe-stream's `feglm_stream` that the fit here ignores (it has no
+# row files, it counts a single fixed effect's parameters without `fe_dof`, and
+# it reports the within pseudo R-squared whenever there is a fixed effect)
+_BINARY_IGNORED = {"save_resid", "within_pseudo_r2", "fe_dof"}
+
+
+def _binary_route(vcov, cluster, options):
+    """The options for this package's fit of a binary logit, or None when only
+    hdfe-stream's does it: an option it has no counterpart of
+    (``bias_correction``, ``bootcluster``, ...), the separation check
+    switched off, or CRV3."""
+    import inspect
+
+    from .estimator import _fit
+    known = set(inspect.signature(_fit).parameters) - {
+        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2", "random",
+        "random_cov", "random_tol", "random_method", "firth", "device", "link", "altwise",
+        "poisson_options", "profile", "own_covariates", "_binary"}
+    opts = dict(options)
+    for k in _BINARY_IGNORED:
+        opts.pop(k, None)
+    if opts.pop("separation_check", True) is not True:
+        return None
+    for off, default in (("bias_correction", False), ("bootcluster", None)):
+        if off in opts and opts[off] == default:        # switched off: as not given
+            del opts[off]
+    if "iwls_tol" in opts:
+        opts["tol"] = opts.pop("iwls_tol")
+    if "iwls_maxiter" in opts:
+        opts["maxiter"] = opts.pop("iwls_maxiter")
+    if any(k not in known for k in opts):
+        return None
+    vs = [vcov] + ([cluster] if isinstance(cluster, str) else list(cluster or []))
+    if any("CRV3" in (v if isinstance(v, str) else " ".join(map(str, v))) for v in vs):
+        return None
+    if options.get("fe_dof", "exact") not in ("exact", "pyfixest"):
+        return None
+    return opts
 
 
 def mlogit_stream(fml: str, data: Source, workdir: PathLike | None = None,
@@ -221,12 +283,12 @@ def probit_stream(fml: str, data: Source, workdir: PathLike | None = None,
                   vcov: Vcov = "iid", cluster: Sequence[str] | str = (),
                   **options: Any):
     """Out-of-core binary probit, with any number of high-dimensional fixed
-    effects: hdfe-stream's `hdfe_stream.feglm_stream` with
-    ``family="probit"``, as `logit_stream` is with ``family="logit"`` (see
-    there: the options, the result, the bias correction)."""
-    from hdfe_stream import feglm_stream
-    return feglm_stream(fml, data, "probit", workdir=workdir, vcov=vcov, cluster=cluster,
-                        **options)
+    effects: as `logit_stream` (see there: the options, the routing, the
+    bias correction), with the standard normal in place of the logistic. With
+    no fixed effect or one the fit is this package's, the two-level ordered
+    probit's Newton iterations, reported as a `BinaryProbitResult`; its
+    variances use the expected information, as `feglm_stream`'s do."""
+    return _binary_fit("probit", fml, data, workdir, vcov, cluster, options)
 
 
 def cfelogit_stream(fml: str, data: Source, workdir: PathLike | None = None,
@@ -340,6 +402,17 @@ mlogit_stream.__doc__ = """Out-of-core multinomial logit by streamed Newton.
     levels : sequence, optional
         The outcome's levels in the order wanted, base first. Default: the
         distinct values, sorted.
+    own_covariates : dict, optional
+        Covariates that enter only one level's equation: ``{level: column}``
+        (or a list of columns), such as each group's baseline share
+        predicting that group alone, ``{"Black": "share_black", "Asian":
+        "share_asian"}``. A column named here is not a coefficient in the
+        other levels' equations, so ``k - 1`` shares add ``k - 1``
+        parameters rather than ``(k - 1)^2``. Name the non-base levels; the
+        columns must not also be in the formula. The coefficients are named
+        ``"<level>:<column>"``, and `predict` takes the columns from the new
+        data. Not available with fixed or random effects, ``firth=``,
+        ``profile=`` or ``device="cuda"``.
     poisson_options : dict, optional
         With several fixed effects: further options of hdfe-stream's
         `fepois_stream` (``solver``, ``precond``, ``max_memory_gb``,

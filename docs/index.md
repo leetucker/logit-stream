@@ -65,9 +65,9 @@ and one dense solve.
   (`"y ~ x | puma"`): each level gets its own intercept for every outcome
   level, solved exactly within each Newton step by eliminating the per-level
   blocks of the information matrix, with standard errors identical to the fit
-  with indicators. The binary logit absorbs any number of fixed effects
-  (hdfe-stream's), with an optional correction of the incidental-parameter
-  bias, and so does the multinomial logit, through the equivalent Poisson
+  with indicators. The binary logit and probit absorb one the same way (and any
+  number through hdfe-stream), with an optional correction of the incidental-parameter
+  bias. The multinomial logit absorbs any number through the equivalent Poisson
   regression.
 - **Random intercepts** (experimental) for the multinomial and ordered
   logit, by Laplace's approximation, with nested or crossed groupings, as
@@ -108,18 +108,18 @@ On American Community Survey microdata (see the
 
 | model | logit-stream | fastest other library |
 |---|---|---|
-| multinomial, 5 levels, 164 coefficients | 37 s, 1.3 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
-| ordered, 5 levels | 33 s, 1.2 GB | 301 s, 8.2 GB (mord, which fits a different loss); statsmodels' `OrderedModel` timed out (30 minutes) from 3 million rows |
-| binary | 17 s, 2.7 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
+| multinomial, 5 levels, 164 coefficients | 21 s, 1.2 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
+| ordered, 5 levels | 6.6 s, 1.2 GB | 301 s, 8.2 GB (mord, which fits a different loss); statsmodels' `OrderedModel` timed out (30 minutes) from 3 million rows |
+| binary | 7.6 s, 1.3 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
 
-The binary logit is hdfe-stream's, and on a design with only 41 columns
-scikit-learn's Newton–Cholesky solver takes the same Newton steps in memory:
-it is faster below about 3 million rows, logit-stream above, and it needs a
-quarter of the memory. Its advantage there is memory, and absorbing fixed
-effects that would otherwise be thousands of indicator columns.
+On a binary logit with only 41 columns, scikit-learn's Newton–Cholesky solver
+takes the same Newton steps in memory: it is faster below about a million
+rows, logit-stream above, and it needs a tenth of the memory. The advantage
+there is mostly memory, and absorbing fixed effects that would otherwise be
+thousands of indicator columns.
 
-**On small data it gains you little.** A fit costs about a second and a
-quarter of fixed overhead (imports, formula planning, pass 0), and a process
+**On small data it gains you little.** A fit costs about a second of
+fixed overhead (imports, formula planning, pass 0), and a process
 with logit-stream loaded starts at about half a gigabyte. Below about
 100,000 rows, statsmodels and scikit-learn's Newton–Cholesky solver are
 faster.

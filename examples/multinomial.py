@@ -44,6 +44,14 @@ print(pl.DataFrame({"coefficient": fit.coefnames[:6],
                     "CRV1 state": fit.with_vcov({"CRV1": "state"}).se[:6],
                     "CRV1 state+age": two_way.se[:6], "CRV3 state": jack.se[:6]}))
 
+# ---- a covariate that enters one level's equation only
+shares = people.group_by("puma").agg(
+    [(pl.col("race") == r).mean().alias(f"share_{r}") for r in RACES[1:]])
+own = mlogit_stream(f"race ~ {X}", people.join(shares, on="puma"), levels=RACES,
+                    vcov="hetero", verbose=False,
+                    own_covariates={r: f"share_{r}" for r in RACES[1:]})
+print(own.tidy().filter(pl.col("Coefficient").str.contains("share")))
+
 # ---- weights: analytic (rescaled to average 1) or frequency
 w = mlogit_stream(f"race ~ {X}", people, levels=RACES, weights="weight",
                   vcov="hetero", verbose=False)

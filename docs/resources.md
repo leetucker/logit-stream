@@ -40,7 +40,7 @@ The rest of this page is the short version of
 The profile depends on the model: a multinomial logit has K x (J - 1) parameters, an ordered one
 K + J - 1, a conditional one K, and the information matrix, its per-thread copies, the absorbed
 fixed effect's G x J x P cross blocks and the clusters' score sums are sized from them.
-`logit_stream` and `probit_stream` are hdfe-stream's `feglm_stream` and profile as it does.
+`logit_stream` and `probit_stream` with `profile=True` are hdfe-stream's `feglm_stream` and profile as it does.
 
 ### The multinomial logit with several absorbed fixed effects
 
@@ -81,3 +81,7 @@ option sets the limit and `memory_reserve` the share held back (default 0.15), a
 shrink is refused up front with the numbers. Every fit records `diagnostics["peak_rss_gb"]`. The
 full explanation, with the profile's accuracy and what each package does with the headroom, is in
 [hdfe-stream's documentation](https://leetucker.github.io/hdfe-stream/resources.html).
+One choice here is this package's own: the multinomial and ordered logit (and the binary logit and probit,
+the two-level ordered models) with an absorbed fixed effect sort the rows by it when they are not
+grouped already, which partitions them in memory; when that does not fit in what is left, the rows
+stay in their order and the fit is slower.

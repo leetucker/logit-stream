@@ -20,11 +20,14 @@ def test_public_api():
     assert logit_stream.__version__
 
 
-def test_binary_logit_is_hdfe_stream(mnl_data):
+def test_binary_logit(mnl_data):
     from hdfe_stream import HDFEResult
+
+    from logit_stream import BinaryLogitResult
     df = mnl_data.with_columns((pl.col("yi") == 1).cast(pl.Float64).alias("yb"))
     r = logit("yb ~ x1 + x2", df, verbose=False, iwls_tol=1e-12)
-    assert isinstance(r, HDFEResult) and r.family == "logit"
+    assert isinstance(r, BinaryLogitResult) and r.family == "logit"
+    assert isinstance(logit("yb ~ x1 + x2 | g + cl", df, verbose=False), HDFEResult)
     m = sm.Logit(df["yb"].to_numpy(), sm.add_constant(df.select("x1", "x2").to_numpy())) \
         .fit(disp=0, tol=1e-12)
     np.testing.assert_allclose(r.beta, m.params, rtol=1e-8)

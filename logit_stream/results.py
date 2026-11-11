@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 from hdfe_stream.core.results_base import RegressionMulti, RegressionResult
+from scipy import special
 
 from .models import LINKS
 from .store import check_source
@@ -436,12 +437,20 @@ class MultinomialLogitResult(LogitResult):
         non-base level."""
         xs = self._spec["xcols"]
         B = self._B()
+        free = self._spec.get("free")
+        if free is not None:                # an own covariate's other equations
+            B = np.where(free.T, B, np.nan)
         return pl.DataFrame({"Coefficient": xs,
                              **{_level_name(lv): B[:, j] for j, lv in enumerate(self.levels[1:])}})
 
     def _B(self):
         J1, K = len(self.levels) - 1, len(self._spec["xcols"])
-        return np.asarray(self.beta).reshape(J1, K).T
+        free = self._spec.get("free")
+        if free is None:
+            return np.asarray(self.beta).reshape(J1, K).T
+        B = np.zeros((J1, K))
+        B[free] = self.beta
+        return B.T
 
     def predict(self, newdata: Any = None, type: str = "response",
                 prefix: str | None = None) -> pl.LazyFrame:
@@ -543,6 +552,9 @@ class MultinomialLogitResult(LogitResult):
             need |= set(ex.meta.root_names())
         for d in self.fe_names:
             need |= set(self._spec["fe_cols"][d])
+        off = self._spec.get("offset")
+        if off is not None:
+            need |= set(off.meta.root_names())
         return [pl.col(c) for c in sorted(need & names) if c not in ("row_id", self.depvar)]
 
 
@@ -710,6 +722,160 @@ class OrderedProbitResult(OrderedLogitResult):
     standard normal distribution."""
 
     link = "probit"
+
+
+@dataclass(kw_only=True)
+class BinaryLogitResult(OrderedLogitResult):
+    """The result of `logit_stream`: a binary logit, fitted as the two-level
+    ordered logit (its cutpoint is minus the intercept).
+
+    The coefficients are ``Intercept`` first (without an absorbed fixed
+    effect, which carries the location) and then the formula's. The
+    conventions are hdfe-stream's and pyfixest's: the iid variance has the
+    factor (N - 1) / (N - K), the heteroskedasticity-robust one N / (N - K)
+    and a cluster-robust one G / (G - 1) (N - 1) / (N - K), with K counting
+    the fixed effect's parameters (unless it is nested in the cluster
+    variable); the degrees of freedom of a t statistic are N - K, or G - 1.
+
+    Attributes
+    ----------
+    family : str
+        ``"logit"``.
+    deviance : float
+        -2 loglik.
+    k_fe : int
+        The fixed effect's parameters (its levels kept), 0 without one.
+    (and those of `LogitResult`; `levels` is [0, 1])
+    """
+
+    family: str = "logit"
+    deviance: float = np.nan
+    k_fe: int = 0
+
+    @staticmethod
+    def _mu(eta: pl.Expr) -> pl.Expr:
+        """The probability that the outcome is 1, given the linear predictor."""
+        return 1.0 / (1.0 + (-eta).exp())
+
+    @staticmethod
+    def _mu_eta(eta: pl.Expr) -> pl.Expr:
+        """Its derivative in the linear predictor."""
+        mu = 1.0 / (1.0 + (-eta).exp())
+        return mu * (1.0 - mu)
+
+    def _model_lines(self):
+        return [f"obs: {self.n_obs:,}   outcome {self.depvar}: binary"]
+
+    def _model_fields(self):
+        return {}
+
+    @property
+    def cutpoints(self) -> np.ndarray:
+        """The one cutpoint, minus the intercept (0 with a fixed effect)."""
+        return np.array([0.0 if self.fe_names else -float(self.beta[0])])
+
+    def _linear(self, frame, extra=()):
+        """`frame` with the linear predictor's parts as columns: ``xb``
+        (covariates and intercept), ``eta`` (xb, the fixed effect and the
+        offset), and the fixed effect ``fe_<name>``, null where it is not
+        estimated."""
+        xs = self._xexprs()
+        k = len(xs)
+        frame, fe = self._with_fe(frame)
+        beta = np.asarray(self.beta, dtype=float)
+        icpt = float(beta[0]) if self.coefnames and self.coefnames[0] == "Intercept" else 0.0
+        b = beta[1:] if self.coefnames and self.coefnames[0] == "Intercept" else beta
+        off = self._spec.get("offset")
+        fname = "fe_" + self.fe_names[0] if self.fe_names else None
+        fields = {"xb": pl.Float64, "eta": pl.Float64}
+        if fname:
+            fields[fname] = pl.Float64
+
+        def fn(s: pl.Series) -> pl.Series:
+            df = s.struct.unnest()
+            X, A = self._matrix(df, k, len(fe))
+            xb = X @ b + icpt
+            eta = xb if A is None else xb + A[:, 0]
+            if off is not None:
+                eta = eta + df["__ls_off"].to_numpy().astype(float)
+            cols = {"xb": xb, "eta": eta}
+            if fname:
+                cols[fname] = A[:, 0]
+            return pl.DataFrame(cols).fill_nan(None).to_struct(s.name)
+
+        inputs = [ex.alias(f"__ls_p{j}") for j, (_, ex) in enumerate(xs)] + \
+                 [pl.col(c) for c in fe] + ([off.alias("__ls_off")] if off is not None else [])
+        pred = pl.struct(inputs) if inputs else pl.struct(pl.lit(0.0).alias("__ls_none"))
+        if not xs and not fe:
+            k = 0
+        tmp = "__ls_lin"
+        return (frame.with_columns(pred.map_batches(fn, return_dtype=pl.Struct(fields),
+                                                    is_elementwise=True).alias(tmp))
+                     .drop(fe).unnest(tmp))
+
+    def predict(self, newdata: Any = None, type: str = "link",
+                name: str = "prediction") -> pl.LazyFrame:
+        """Predictions on new data, or on the source, as a lazy frame:
+        `newdata` with one column added, ``name``: the linear predictor
+        (``type="link"``, with the fixed effect and the offset), the
+        probability that the outcome is 1 (``"response"``), or the more
+        probable outcome, 0 or 1 (``"class"``). A row whose fixed-effect
+        level was not estimated, or with a null covariate, gets null."""
+        if type not in ("link", "response", "class"):
+            raise ValueError(f"type must be 'link', 'response' or 'class', got {type!r}")
+        out = self._linear(self._frame(newdata))
+        eta = pl.col("eta")
+        if type == "link":
+            val = eta
+        elif type == "response":
+            val = self._mu(eta)
+        else:
+            val = pl.when(eta.is_null()).then(None).otherwise((eta > 0).cast(pl.Int64))
+        keep = [c for c in out.collect_schema().names() if c not in ("xb", "eta")
+                and not c.startswith("fe_")]
+        return out.with_columns(val.alias(name)).select(*keep, name)
+
+    def resid(self) -> pl.LazyFrame:
+        """The estimation sample, lazily: `row_id`, the outcome, ``xb``,
+        ``eta``, ``fitted`` (the probability), ``resid`` (outcome - fitted),
+        ``resid_working`` (resid / (fitted (1 - fitted)), the working
+        residual of the iteratively reweighted fit) and, with a fixed
+        effect, its estimate ``fe_<name>``. Computed from the source when
+        collected (nothing is stored)."""
+        spec = self._spec
+        frame = self._in_sample(spec["source"])
+        frame = frame.select("row_id", spec["yexpr"].alias(self.depvar),
+                             *MultinomialLogitResult._input_columns(self, frame))
+        out = self._linear(frame)
+        eta, y = pl.col("eta"), pl.col(self.depvar).cast(pl.Float64)
+        out = out.with_columns(self._mu(eta).alias("fitted"))
+        out = out.with_columns((y - pl.col("fitted")).alias("resid"))
+        out = out.with_columns((pl.col("resid") / self._mu_eta(eta)).alias("resid_working"))
+        extra = ["fe_" + self.fe_names[0]] if self.fe_names else []
+        return out.select("row_id", self.depvar, "xb", "eta", "fitted", "resid",
+                          "resid_working", *extra)
+
+
+@dataclass(kw_only=True)
+class BinaryProbitResult(BinaryLogitResult):
+    """The result of `probit_stream`: a binary probit, fitted as the two-level
+    ordered probit. As `BinaryLogitResult`, with the standard normal in place
+    of the logistic distribution: ``family`` is ``"probit"``, predicted
+    probabilities are Phi(eta), and ``resid_working`` is resid / phi(eta).
+    The variances use the expected information, as an iteratively
+    reweighted fit's do (the observed one differs from it for the probit).
+    """
+
+    family: str = "probit"
+
+    @staticmethod
+    def _mu(eta: pl.Expr) -> pl.Expr:
+        return eta.map_batches(lambda s: pl.Series(s.name, special.ndtr(s.to_numpy()))
+                               .fill_nan(None), return_dtype=pl.Float64, is_elementwise=True)
+
+    @staticmethod
+    def _mu_eta(eta: pl.Expr) -> pl.Expr:
+        return (-0.5 * eta * eta).exp() / math.sqrt(2.0 * math.pi)
 
 
 @dataclass(kw_only=True)

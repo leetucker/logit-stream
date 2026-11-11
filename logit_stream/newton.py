@@ -34,6 +34,8 @@ import scipy.linalg as sla
 from hdfe_stream.core.report import warn
 from hdfe_stream.core.utils import single_blas as _single_blas
 
+from . import meat_kernels
+
 _HALVINGS = 12
 COLLIN_TOL = 1e-10
 
@@ -130,8 +132,10 @@ class _Driver:
         ll, g, H = 0.0, np.zeros(m.P), (np.zeros((m.P, m.P)) if hessian else None)
         rows = self._rows()
         full = getattr(m, "accumulate_full", None)
+        full_ok = getattr(m, "kernel_ok", None)
         for blk in self.store:
-            if full is not None and firth_A is None:
+            if full is not None and firth_A is None and (
+                    full_ok is None or full_ok(len(blk["y"]))):
                 # a numba pass over the whole block, on its columns in place
                 l, gg, hh = full(theta, blk["X"], m.cols, blk["y"], blk.get("w"),
                                  blk.get("starts"), hessian, offset=blk.get("off"))
@@ -326,9 +330,12 @@ class _Driver:
                                      "log-likelihood")
         # collinearity, from the first step's information (net of the fixed
         # effects, if any)
-        A, prot = m.x_block(H if self.fe is None else self.fe.reduced(H))
-        ref = None if self.fe is None else np.diag(m.x_block(H.tt)[0])
-        keep = self.collinear(A, len(prot), ref=ref)
+        if getattr(m, "own", None):
+            keep = m.keep_columns(H, lambda A: self.collinear(A))
+        else:
+            A, prot = m.x_block(H if self.fe is None else self.fe.reduced(H))
+            ref = None if self.fe is None else np.diag(m.x_block(H.tt)[0])
+            keep = self.collinear(A, len(prot), ref=ref)
         dropped = []
         if not keep.all():
             dropped = [m.xnames[c] for c, k in zip(m.cols, keep) if not k]
@@ -470,7 +477,10 @@ class _Driver:
         M = np.zeros((P, P)) if hetero else None
         U = {name: np.zeros((G, P)) for name, (_, G) in clusters.items()}
         rows = self._rows(scores=True)
+        kp = meat_kernels.make(self, theta, weights_type, clusters, hetero)
         for blk in self.store:
+            if kp is not None and len(blk["y"]) >= meat_kernels.min_rows() and kp.add(blk):
+                continue
             for ch in _chunks(blk, rows):
                 X = _design(ch, m.cols, self.K0)
                 S = m.scores(theta, X, ch["y"], ch.get("starts"), offset=ch.get("off"))
@@ -480,6 +490,12 @@ class _Driver:
                     w = None if w is None else w[st]
                     cl = None if cl is None else cl[st]
                 self._add_meat(S, w, cl, weights_type, M, U, clusters)
+        if kp is not None:
+            Mk, Uk = kp.result()
+            if hetero:
+                M += Mk
+            for name, u in Uk.items():
+                U[name] += u
         return M, U
 
     def cluster_information(self, theta, col, G):

@@ -33,6 +33,8 @@ from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
 from .newton import _Driver
 from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
 from .results import (
+    BinaryLogitResult,
+    BinaryProbitResult,
     ConditionalFELogitResult,
     ConditionalLogitResult,
     LogitMulti,
@@ -41,12 +43,67 @@ from .results import (
     OrderedProbitResult,
     _ic,
 )
-from .store import _build
+from .store import SORT_FE, _build
 
 WORKDIR_ENV = "LOGIT_STREAM_WORKDIR"
 
 _KINDS = {"mlogit": "multinomial logit", "ologit": "ordered logit",
           "clogit": "conditional logit", "cfelogit": "conditional fixed-effects logit"}
+
+
+class _NeedsHdfe(Exception):
+    """A binary fit that only hdfe-stream's engine does (several absorbed
+    fixed effects): `logit_stream` catches it and runs `feglm_stream`."""
+
+
+def _ratio(a, b):
+    return a / b if b > 0 else np.nan
+
+
+def _nested_in_cluster(p0, fe, col):
+    """Whether every level of the absorbed fixed effect (among the rows
+    used) lies in one cluster of the store's cluster column `col`: then the
+    cluster-robust variance does not count that effect's parameters."""
+    G = int(max(1, getattr(fe, "G", 1)))
+    lo = np.full(G, np.iinfo(np.int64).max)
+    hi = np.full(G, -1)
+    keep_g = getattr(fe, "keep_g", None)
+    for blk in p0.store:
+        f = np.asarray(blk["fe"], dtype=np.int64)
+        c = np.asarray(blk["cl"][:, col], dtype=np.int64)
+        if keep_g is not None:
+            m = keep_g[f]
+            f, c = f[m], c[m]
+        np.minimum.at(lo, f, c)
+        np.maximum.at(hi, f, c)
+    seen = hi >= 0
+    return bool(np.all(lo[seen] == hi[seen]))
+
+
+def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req):
+    """The binary logit's report from the two-level ordered fit's: the
+    variances scaled as hdfe-stream's and pyfixest's are, K = P + k_fe
+    (iid (N - 1) / (N - K), hetero N / (N - K), clustered times
+    (N - 1) / (N - Kc), Kc counting the fixed effect only if it is not nested
+    in the request's clusters), and the cutpoint as the intercept (minus it,
+    first)."""
+    K = P + k_fe
+    fac = {"iid": _ratio(N - 1, N - K), "hetero": _ratio(N - 1, N - K)}
+    out = {}
+    for key, (V, df) in all_vcovs.items():
+        if key in fac:
+            out[key] = (V * fac[key], int(N - K))
+        else:
+            Kc = P + (1 if nested_by_req.get(key) else k_fe)
+            fac[key] = _ratio(N - 1, N - Kc)
+            out[key] = (V * fac[key], df)
+    if names and names[-1] == "cut1":
+        perm = np.r_[P - 1, np.arange(P - 1)]
+        sgn = np.r_[-1.0, np.ones(P - 1)]
+        out = {k: ((V[np.ix_(perm, perm)] * np.outer(sgn, sgn)), df) for k, (V, df) in out.items()}
+        beta = np.asarray(beta)[perm] * sgn
+        names = ["Intercept"] + list(names[:-1])
+    return names, beta, out, fac
 
 
 def _log(verbose, msg, logger=None, level=None):
@@ -110,7 +167,11 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
-         max_memory_gb: float | None = None, memory_reserve: float | None = None):
+         max_memory_gb: float | None = None, memory_reserve: float | None = None,
+         own_covariates: dict | None = None, _binary: bool = False):
+    if own_covariates is not None:
+        own_covariates = _check_own(kind, own_covariates, random=random, firth=firth,
+                                    profile=profile, device=device, poisson=poisson_options)
     if poisson_options is not None and kind != "mlogit":
         raise ValueError("poisson_options= is for mlogit_stream with several fixed effects")
     if weights_type not in ("aweights", "fweights"):
@@ -189,6 +250,11 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                   collect=lambda q, what: engine.collect(q, what))
     results = []
     for spec in specs:
+        if own_covariates is not None:
+            if spec.fe:
+                raise ValueError(f"{spec.fml}: own_covariates= is not available with an "
+                                 "absorbed fixed effect")
+            spec = _with_own(spec, own_covariates, lf)
         if kind == "cfelogit":
             # the formula's one fixed effect is the unit, conditioned out
             if len(spec.fe) != 1:
@@ -211,6 +277,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             # the groupings' codes are the store's fe, fe2, ... in this order
             spec = replace(spec, fe=[*random, *spec.fe])
         elif spec.fe:
+            if _binary and len(spec.fe) > 1:
+                raise _NeedsHdfe
             if kind == "clogit":
                 raise ValueError(f"{spec.fml}: fixed effects are not available for the "
                                  "conditional logit (a characteristic of the choice set "
@@ -267,7 +335,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
                                 firth=firth, offset=offset, start=start, device=device,
-                                link=link, altwise=altwise, budget=budget))
+                                link=link, altwise=altwise, budget=budget,
+                                own_covariates=own_covariates, binary=_binary))
     if profile:
         from .profile import combine_profiles
         return combine_profiles(results)
@@ -278,7 +347,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
              random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
-             device=None, link="logit", altwise=False, budget=None):
+             device=None, link="logit", altwise=False, budget=None, own_covariates=None,
+             binary=False):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -287,15 +357,26 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         p0 = _build(lf, spec, kind, run.path, engine, weights=weights,
                     clusters=clusters, case=case, levels=levels,
                     in_memory=(storage == "memory"),
+                    sort_fe=(SORT_FE and kind in ("mlogit", "ologit") and random is None
+                             and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
-                    altwise=altwise)
+                    altwise=altwise, budget=budget)
         disk_peak = p0.store.bytes if storage == "disk" else 0
+        if binary:
+            try:
+                ok = [float(v) for v in p0.levels] == [0.0, 1.0]
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise ValueError(f"{spec.fml}: {link} needs a dependent variable of 0s and 1s; "
+                                 f"its values are {list(p0.levels)[:6]}")
         xnames = [nm for nm, _ in spec.x]
         K = len(xnames)
         if kind == "mlogit":
             ic = xnames.index("Intercept") if "Intercept" in xnames else None
-            model = _Multinomial(xnames, K, p0.levels, ic)
+            model = _Multinomial(xnames, K, p0.levels, ic,
+                                 own=_resolve_own(own_covariates, p0.levels, xnames, spec.fml))
         elif kind == "ologit":
             model = _Ordered(xnames, K, p0.levels, link=link)
         elif kind == "cfelogit":
@@ -314,8 +395,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             else None
         if random is not None:
             keys = {nm: ("fe" if i == 0 else f"fe{i + 1}") for i, nm in enumerate(spec.fe)}
-            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger, budget=budget,
-                                cov=random_cov)
+            fe = _RandomEffects(model, p0, random, outer, keys, log=log, logger=logger,
+                                budget=budget, cov=random_cov)
             if clusters:
                 cl = {k: (i, 0) for i, k in enumerate(clusters)}
                 bad = [k for k, ok in fe.nested(cl).items() if not ok]
@@ -358,6 +439,14 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                      "standard errors are not meaningful at the boundary.", logger)
         else:
             fit = driver.run(theta0, spec.fml)
+        if binary and link == "probit":
+            # the variances use the expected information, as an IRLS fit's do
+            # (for the logit it is the observed one)
+            model.expected = True
+            ll_e, _, H_e = driver.objective(fit.theta, hessian=True)
+            if H_e is None:
+                raise RuntimeError(f"{spec.fml}: the information at the estimates is not finite")
+            fit.H = H_e
         names = model.names()
         P = len(names)
         N = p0.wsum if weights_type == "fweights" else (
@@ -373,13 +462,26 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             # (the coefficients' block of the inverse of the whole information)
             sg = re_info["sigma"]
             Vi = Vi + sg["J"] @ sg["vcov"] @ sg["J"].T
-        all_vcovs = {"iid": (Vi, int(N - P))}
+        # analytic weights are scaled to a mean of one over the rows read, before
+        # a fixed effect's separation drops some: the binary logit rescales them
+        # over the rows used, as hdfe-stream does (it matters to the iid vcov and
+        # the log-likelihood, not to the robust variances); so do the multinomial
+        # and ordered logit
+        wfix = (p0.n_obs / p0.wsum if (binary or kind in ("mlogit", "ologit"))
+                and random is None and weights and weights_type != "fweights"
+                and p0.wsum > 0 else 1.0)
+        all_vcovs = {"iid": (Vi / wfix, int(N - P))}
         n_clusters = {}
         if hetero or clusters:
             log("final pass: scores for the robust variance")
             cl_index = {k: (i, int(p0.cluster_tables[k].height))
                         for i, k in enumerate(clusters)}
             M, U = driver.meat(fit.theta, fit.H, weights_type, cl_index, hetero)
+            if kind in ("mlogit", "ologit"):
+                # a cluster whose rows were all dropped (a fixed effect's separation)
+                # is not one: G counts the clusters of the rows used
+                cl_index = {k: (i, int(np.count_nonzero(np.any(U[k] != 0, axis=1))))
+                            for k, (i, _) in cl_index.items()}
             Hinv = driver.inverse(fit.H) if fe is None else None
             if hetero:
                 all_vcovs["hetero"] = (_sandwich(fe, fit, Hinv, M) * N / max(N - 1, 1),
@@ -412,9 +514,12 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             c = p0.counts
             ll0 = float(np.sum(c * np.log(c / c.sum())))
         k_fe = fe.n_params if fe is not None else 0
+        ll, ll0 = ll * wfix, ll0 * wfix
         aic, bic = _ic(ll, P + k_fe, N)
         # the null with only the fixed effect: free, from its outcome counts
-        ll_fe0 = fe.loglik_fe_only() if fe is not None and random is None else np.nan
+        # (with an offset the groups' shares are not the fixed-effect-only fit: none is reported)
+        ll_fe0 = (fe.loglik_fe_only() * wfix
+                  if fe is not None and random is None and offset is None else np.nan)
         diagnostics = {
             "newton": {"iterations": fit.iterations, "converged": fit.converged,
                        "decrement": fit.decrement, "step_halvings": fit.halvings,
@@ -428,6 +533,12 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             "disk_peak_gb": round(disk_peak / 1e9, 4),
             "seconds_total": round(time.time() - t0, 2),
         }
+        if kind in ("mlogit", "ologit") and device is None and (
+                fe is None or hasattr(fe, "information_form")):
+            diagnostics["information"] = {
+                "form": model.information_form(p0.n_obs) if fe is None else fe.information_form(),
+                "density": None if getattr(model, "density", None) is None
+                else round(float(model.density), 4)}
         if engine.fallbacks:
             diagnostics["polars_gpu_fallbacks"] = list(engine.fallbacks)
         if device is not None:
@@ -445,11 +556,28 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             diagnostics["separation"] = fe.separation
         _separation_warning(spec, model, beta, np.sqrt(np.diag(all_vcovs["iid"][0])), fit, p0,
                             logger)
+        if binary:
+            nested_by_req, nested_terms = {}, {}
+            if fe is not None and requests:
+                for req, parts in requests.items():
+                    for one, _, _ in parts:
+                        if one not in nested_terms:
+                            nested_terms[one] = _nested_in_cluster(p0, fe, cl_index[one][0])
+                    nested_by_req[req] = any(nested_terms[one] for one, _, _ in parts)
+            names, beta, all_vcovs, vfac = _binary_report(names, beta, all_vcovs, N, P, k_fe,
+                                                          nested_by_req)
+            V, df_t = all_vcovs[vkey]
+            diagnostics["irls"] = {"iterations": fit.iterations, "converged": fit.converged,
+                                   "decrement": fit.decrement, "tol": tol,
+                                   "step_halvings": fit.halvings}
+            diagnostics["vcov_factors"] = {k: float(v) for k, v in vfac.items()}
+            diagnostics["nested_in_cluster"] = {k: bool(v) for k, v in nested_by_req.items()}
         common = dict(fml=spec.fml, depvar=spec.depvar, coefnames=names, beta=beta, vcov=V,
                       vcov_type=vkey, df_t=df_t, n_obs=int(N) if float(N).is_integer() else N,
                       all_vcovs=all_vcovs, n_clusters=n_clusters, collin_vars=fit.dropped,
                       diagnostics=diagnostics, weights=weights, weights_type=weights_type,
-                      model=("ordered probit" if link == "probit" else _KINDS[kind]),
+                      model=(f"binary {link}" if binary else
+                             "ordered probit" if link == "probit" else _KINDS[kind]),
                       loglik=ll, loglik_null=ll0,
                       pseudo_r2=float(1 - ll / ll0) if ll0 else np.nan, aic=aic, bic=bic,
                       loglik_fe_null=ll_fe0,
@@ -478,12 +606,20 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                  "incomplete": p0.incomplete}
         if fe is not None:
             rspec.update(fe.result_spec(fit.theta))
+        if kind == "mlogit" and model.own:
+            rspec["free"] = model.free().copy()
         if kind == "mlogit":
             res = MultinomialLogitResult(**common, levels=list(p0.levels), base=p0.levels[0],
                                          _spec=rspec)
         elif kind == "ologit":
-            cls = OrderedProbitResult if link == "probit" else OrderedLogitResult
-            res = cls(**common, levels=list(p0.levels), _spec=rspec)
+            if binary:
+                common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None else {})
+                cls = BinaryProbitResult if link == "probit" else BinaryLogitResult
+                res = cls(**common, levels=list(p0.levels), family=link,
+                                        deviance=float(-2 * ll), k_fe=int(k_fe), _spec=rspec)
+            else:
+                cls = OrderedProbitResult if link == "probit" else OrderedLogitResult
+                res = cls(**common, levels=list(p0.levels), _spec=rspec)
         elif kind == "cfelogit":
             res = ConditionalFELogitResult(**common, unit=list(case),
                                            n_units=p0.units["units"],
@@ -497,6 +633,72 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
     finally:
         if not keep_intermediates:
             run.cleanup()
+
+
+def _own_columns(own_covariates):
+    """{level: [columns]} from `own_covariates`: a column or a list of them
+    for each level."""
+    return {lv: ([c] if isinstance(c, str) else list(c)) for lv, c in own_covariates.items()}
+
+
+def _check_own(kind, own_covariates, *, random, firth, profile, device, poisson):
+    if kind != "mlogit":
+        raise ValueError("own_covariates= is for mlogit_stream")
+    if not isinstance(own_covariates, dict) or not own_covariates:
+        raise ValueError("own_covariates= is a dict {outcome level: column, or list of "
+                         "columns}, e.g. {'Black': 'share_black', 'Asian': 'share_asian'}")
+    own = _own_columns(own_covariates)
+    flat = [c for cs in own.values() for c in cs]
+    if not all(isinstance(c, str) for c in flat) or not flat:
+        raise ValueError("own_covariates= names columns by their names")
+    if len(set(flat)) < len(flat):
+        raise ValueError("own_covariates= gives a column to more than one level (each level's "
+                         "own covariates are its own columns)")
+    for name, bad in (("random=", random is not None), ("firth=", firth),
+                      ("profile=", profile), ("device='cuda'", device not in (None, "cpu")),
+                      ("poisson_options=", poisson is not None)):
+        if bad:
+            raise ValueError(f"own_covariates= and {name} cannot be combined")
+    return own
+
+
+def _with_own(spec, own, lf):
+    """`spec` with the own-covariate columns added to its design, after the
+    formula's (so the formula's terms are a prefix)."""
+    have = {nm for nm, _ in spec.x}
+    schema = lf.collect_schema()
+    extra = []
+    for cs in own.values():
+        for c in cs:
+            if c not in schema:
+                raise ValueError(f"{spec.fml}: own_covariates= names {c!r}, which is not a "
+                                 "column of the data")
+            if c in have:
+                raise ValueError(f"{spec.fml}: {c!r} is both in the formula (where it enters "
+                                 "every level's equation) and in own_covariates=")
+            extra.append((c, pl.col(c).cast(pl.Float64)))
+    return replace(spec, x=list(spec.x) + extra)
+
+
+def _resolve_own(own, levels, xnames, fml):
+    """{design column: equation index (0-based among the non-base levels)}
+    from `own_covariates` ({level: [columns]}), matching the keys to the
+    outcome's levels (by value, else by string)."""
+    if own is None:
+        return {}
+    out = {}
+    for lv, cs in own.items():
+        hit = [i for i, v in enumerate(levels) if v == lv] or \
+              [i for i, v in enumerate(levels) if str(v) == str(lv)]
+        if not hit:
+            raise ValueError(f"{fml}: own_covariates= names the level {lv!r}, and the outcome's "
+                             f"levels are {list(levels)}")
+        if hit[0] == 0:
+            raise ValueError(f"{fml}: own_covariates= names the base level {levels[0]!r}, which "
+                             "has no equation (its coefficients are zero); name the others")
+        for c in cs:
+            out[xnames.index(c)] = hit[0] - 1
+    return out
 
 
 def _warm_start(theta0, start, model, fml):
@@ -614,9 +816,10 @@ def _separation_warning(spec, model, beta, se, fit, p0, logger):
     cols = list(model.cols)
     K = len(cols)
     flagged = []
+    pcols = model.param_cols() if model.kind == "mlogit" else None
     for i, nm in enumerate(names):
         if model.kind == "mlogit":
-            c = cols[i % K]
+            c = pcols[i]
         elif i < K:
             c = cols[i]
         else:

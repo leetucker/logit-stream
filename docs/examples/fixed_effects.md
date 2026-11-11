@@ -37,8 +37,10 @@ fixed effects: puma (1,020 levels)
 With the PUMA effects in the model, as in the simulation, the coefficients
 are closer to those it draws from than without them (`Black:urban` 0.90
 against 0.9; 0.86 without). An interaction of columns is one fixed effect
-(`| state^year`). The binary logit (`logit_stream`) absorbs any number,
-through hdfe-stream; the multinomial logit too, [differently](#several-fixed-effects).
+(`| state^year`). The binary logit and probit (`logit_stream`, `probit_stream`) absorb one fixed effect
+with this package's own engine, the same as the ordered logit, and any number
+through hdfe-stream; the multinomial logit absorbs any number too,
+[differently](#several-fixed-effects).
 
 ## What is estimated
 
@@ -94,7 +96,14 @@ the system exactly by eliminating the group blocks (the Schur complement);
 the coefficients' variance is the inverse of the reduced matrix, which is
 exactly the corresponding block of the inverse of the whole matrix. The
 robust and clustered variances use each row's score net of the part the
-fixed effects absorb. The rows need not be sorted by group.
+fixed effects absorb. Your rows can be in any order. The first pass writes
+them grouped by the fixed effect (a sort that costs nothing extra if they
+already are), so each thread of the fast passes works on whole groups. If one
+level has more rows than a block holds, the rows stay in their order and the
+slower passes run. So they do when the rows are not grouped and sorting them
+would not fit in the memory left (`max_memory_gb`): sorting partitions the rows
+in memory first, and a fit that must stay inside a limit gives up speed
+instead.
 
 Memory grows with $G \times (J-1) \times P$: 2,462 PUMAs, five outcome levels
 and 150 coefficients take about 15 MB. A fit refuses to start above 8 GB.

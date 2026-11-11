@@ -4,24 +4,24 @@
  "memory_gb": 30.8,
  "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
  "python": "3.12.3",
- "logit-stream": "0.3.0",
- "hdfe-stream": "0.9.0",
+ "logit-stream": "0.3.1",
+ "hdfe-stream": "0.10.0",
  "scikit-learn": "1.9.1",
  "statsmodels": "0.15.0",
  "xlogit": "0.2.7",
  "jaxlogit": "1.0.0",
  "jax": "0.12.0.1",
  "mord": "0.7",
- "pyfixest": "0.60.0",
+ "pyfixest": "0.70.0",
  "polars": "2.1.0",
  "numpy": "2.5.4",
  "numba": "0.68.0",
  "scipy": "1.18.1",
  "pandas": "3.1.0",
  "cupy-cuda13x": null,
- "measured": "2026-11-05",
+ "measured": "2026-11-11",
  "ec2": {
-  "run": "2026-11-05T2321Z_c8id.4xlarge_spot_logit-0.3.0-rerun2",
+  "run": "2026-11-11T1604Z_c8id.4xlarge_spot_logit-0.3.1-kernels-pyfixest0.70",
   "instance_type": "c8id.4xlarge",
   "market": "spot",
   "region": "us-east-2",
@@ -30,17 +30,17 @@
   "data_disk": "local NVMe (/dev/nvme1n1)",
   "baseline": "2026-10-29T0326Z_c8id.4xlarge_spot_binary-kernel",
   "baseline_measured": "2026-10-29",
-  "note": "logit-stream rows in acs, choice, mixed and panel (logit-stream, PUMA fixed effects and low memory series; not the random-intercept series) were re-measured on this run with logit-stream 0.3.0 and hdfe-stream 0.9.0; all other rows, including every other library, are from the baseline run (logit-stream 0.1.0, hdfe-stream 0.6.0). The GPU results are from 0.1.0."
+  "note": "The multinomial and ordered logit-stream rows in acs (logit-stream, PUMA fixed effects and low memory series), the binary logit-stream rows in acs and panel, the panel logit-stream rows, and the pyfixest rows in acs and panel were re-measured on this run with logit-stream 0.3.1 (321c00a) and hdfe-stream 0.10.0, pyfixest 0.70.0. Other logit-stream rows (choice, mixed, the random-intercept series) are from 2026-11-05 (logit-stream 0.3.0, hdfe-stream 0.9.0); all other libraries' rows are from the baseline run (logit-stream 0.1.0, hdfe-stream 0.6.0). The GPU results are from 0.1.0. The panel fixed-effects logit-stream row at 3 million rows (5.3 s in that run, against 4.1 s with 0.3.0) was re-measured alone on 2026-11-11T1627Z_c8id.4xlarge_spot_fe-3m-recheck (3.95 s) and replaces it. The binary logit-stream rows in acs (logit-stream and PUMA fixed effects series) were then re-measured on 2026-11-11T1725Z_c8id.4xlarge_spot_binary-ordered-engine with logit-stream 6a9b260 (the binary logit fitted by the ordered engine), and the panel fixed-effects logit-stream rows on 2026-11-11T1800Z_c8id.4xlarge_spot_binary-engine-panel2 with logit-stream 44f0b15; the rows replace those of the earlier run."
  },
  "code": {
   "logit-stream": {
-   "commit": "0cb26abbee534b25134b901cda67a50a84e94bdb",
-   "describe": "0cb26ab",
+   "commit": "44f0b15",
+   "describe": "44f0b15",
    "dirty": false
   },
   "hdfe-stream": {
-   "commit": "d933f774f2ad5ec59adb44646d3a4de8791f0ed9",
-   "describe": "d933f77",
+   "commit": "d984c08f500abf441571cd2a02200bd1f4ff4b2b",
+   "describe": "d984c08",
    "dirty": false
   }
  }

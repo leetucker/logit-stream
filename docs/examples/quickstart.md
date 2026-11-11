@@ -47,8 +47,9 @@ FE dof: 1,019   deviance: 166607.57   log-likelihood: -83303.783   pseudo R2: 0.
 └─────────────┴───────────┴────────────┴────────────┴─────────────┘
 ```
 
-The binary logit is hdfe-stream's `feglm_stream(..., family="logit")`: any
-number of fixed effects, and an `hdfe_stream.HDFEResult`. One PUMA where
+The binary logit takes any number of fixed effects: with one or none it is fitted
+by this package's own engine (a `BinaryLogitResult`), with more by hdfe-stream's
+`feglm_stream` (an `hdfe_stream.HDFEResult`). One PUMA where
 nobody is Hispanic was dropped: its effect would be minus infinity. See
 [binary outcomes](binary.md).
 

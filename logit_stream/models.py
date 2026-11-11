@@ -28,6 +28,8 @@ conditional
 
 from __future__ import annotations
 
+import math
+
 import numba as nb
 import numpy as np
 from scipy.special import expit, ndtr, ndtri
@@ -51,6 +53,34 @@ SPARSE_MAX_PARAMS = 1200
 # is NumPy's (`_Conditional._accumulate_blas`).
 PARTS_PER_THREAD = 4
 PARTS_MB = 64.0
+# The multinomial logit's fused numba passes (`_mnl_pass`, `_mnl_pass_tri`),
+# used for a block of at least MNL_KERNEL_MIN_ROWS rows (fewer: the per-call
+# cost of the parallel loop and its accumulators is not worth it). The
+# information is formed either from each row's nonzeros, when at most
+# MNL_NNZ_DENSITY of the design's entries are nonzero (up to SPARSE_MAX_PARAMS
+# parameters), or from its outer product, whose cost does not depend on the
+# data: the nonzero form costs about (density x columns)^2 per pair of
+# equations, the outer product columns^2 / 2 but several times faster per
+# entry, which puts the crossover at a density of about 0.2 for any number of
+# columns (measured, 6 outcome levels, 11-96 columns). The outer product's
+# accumulators leave the core's cache as the columns grow, but it was
+# still faster than BLAS's products at 96 columns (480 parameters; at 64:
+# 0.5 s against 1.3-1.8 s per million rows), so it is used up to
+# MNL_KERNEL_MAX_K columns.
+MNL_KERNEL_MIN_ROWS = 4096
+MNL_NNZ_DENSITY = 0.2
+MNL_KERNEL_MAX_K = 96
+# The ordered logit's and probit's fused pass (`_ord_pass`), from the same
+# number of rows. Its information is one weighted Gram matrix of the
+# covariates, from each row's outer product (up to ORD_KERNEL_MAX_K
+# covariates: beyond, BLAS's products are faster; measured 1M rows, 5 levels:
+# 0.30 s against 0.44 at 100, 0.66 against 0.52 at 128) or, with at most
+# ORD_NNZ_DENSITY of the entries nonzero (about the crossover at 40-110
+# covariates), from its nonzeros (up to ORD_NNZ_MAX_K, where the accumulator
+# is 2 MB).
+ORD_KERNEL_MAX_K = 96
+ORD_NNZ_DENSITY = 0.3
+ORD_NNZ_MAX_K = 512
 # the fixed-effects logit's parts take runs of this many consecutive units
 CFE_RUN = 64
 CLOGIT_KERNEL_MAX_P = 256
@@ -114,6 +144,413 @@ def _mnl_info_sparse(X, P, w, n_threads, out):
                             a_[ra, lo + idx[bb]] += xa * val[bb]
     for t in range(n_threads):
         out += acc[t]
+
+
+@nb.njit(parallel=True, cache=True)
+def _mnl_info_sparse_own(X, P, w, own, n_threads, out):
+    """`_mnl_info_sparse` for a design with own covariates: `own[k]` is the
+    equation (0-based, among the non-base levels) that column k enters, or
+    -1 for a column in every equation. A pair of columns contributes to
+    block (j, l) only if each is in its equation, so the off-diagonal
+    entries of the own columns are left zero (the caller takes the free
+    parameters' rows and columns)."""
+    n, K = X.shape
+    J1 = P.shape[1]
+    Pn = J1 * K
+    acc = np.zeros((n_threads, Pn, Pn))
+    step = (n + n_threads - 1) // n_threads
+    for t in nb.prange(n_threads):
+        idx = np.empty(K, np.int64)
+        val = np.empty(K)
+        a_ = acc[t]
+        for i in range(t * step, min(n, (t + 1) * step)):
+            cnt = 0
+            for k in range(K):
+                x = X[i, k]
+                if x != 0.0:
+                    idx[cnt] = k
+                    val[cnt] = x
+                    cnt += 1
+            wi = w[i]
+            for j in range(J1):
+                pj = P[i, j] * wi
+                if pj == 0.0:
+                    continue
+                for l in range(j, J1):
+                    v = pj * ((1.0 if j == l else 0.0) - P[i, l])
+                    if v == 0.0:
+                        continue
+                    jo, lo = j * K, l * K
+                    for aa in range(cnt):
+                        oa = own[idx[aa]]
+                        if oa >= 0 and oa != j:
+                            continue
+                        ra = jo + idx[aa]
+                        xa = v * val[aa]
+                        for bb in range(cnt):
+                            ob = own[idx[bb]]
+                            if ob >= 0 and ob != l:
+                                continue
+                            a_[ra, lo + idx[bb]] += xa * val[bb]
+    for t in range(n_threads):
+        out += acc[t]
+
+
+@nb.njit(parallel=True, cache=True)
+def _mnl_pass(X, theta, cols, ncols, off, y, w, hessian, ll_t, g_t, H_t):
+    """The multinomial logit's log-likelihood, gradient and, with `hessian`,
+    information over the rows of a block, in one pass, for a design of mostly
+    zeros: the rows are split into ``len(ll_t)`` parts, and part t's sums are
+    written to ``ll_t[t]``, ``g_t[t]`` and ``H_t[t]``, for the caller to add
+    up. Per row: the linear predictors, the softmax, the log-likelihood, the
+    gradient w (1[y = j] - p_j) x, and the information
+    sum w p_j (1[j = l] - p_l) x x' for the blocks j <= l, over the row's
+    nonzero entries (a design of indicators has a few per equation); only the
+    upper triangle is filled. Without `hessian` this is also the pass for a
+    dense design (`_mnl_pass_tri` forms its information).
+
+    Equation j (the j-th non-base level) has the columns ``cols[j, :ncols[j]]``
+    of `X`, its parameters ``off[j] + a`` in `theta`: every column in every
+    equation, or fewer with own covariates.
+
+    Like `_clogit_pass`, there is no row-sized temporary and the only parallel
+    loop is over the parts, whose accumulators the caller allocates."""
+    n = len(y)
+    J1 = len(ncols)
+    P = off[J1]
+    n_parts = len(ll_t)
+    has_w = len(w) > 0
+    step = (n + n_parts - 1) // n_parts
+    for t in nb.prange(n_parts):
+        xg = np.empty(P)                    # the row's entries, in parameter order
+        nzi = np.empty(P, np.int64)         # parameter indices of its nonzeros, by equation
+        cnt = np.zeros(J1, np.int64)
+        et = np.empty(J1)
+        p = np.empty(J1)
+        g = np.zeros(P)
+        Ht = np.zeros((P, P) if hessian else (0, 0))
+        llt = 0.0
+        for i in range(t * step, min(n, (t + 1) * step)):
+            wi = w[i] if has_w else 1.0
+            m = 0.0
+            for j in range(J1):
+                e = 0.0
+                o = off[j]
+                for a in range(ncols[j]):
+                    x = X[i, cols[j, a]]
+                    xg[o + a] = x
+                    e += x * theta[o + a]
+                et[j] = e
+                if e > m:
+                    m = e
+            s = np.exp(-m)
+            for j in range(J1):
+                p[j] = np.exp(et[j] - m)
+                s += p[j]
+            yi = y[i]
+            lp = -m - np.log(s)
+            if yi > 0:
+                lp += et[yi - 1]
+            llt += wi * lp
+            inv = 1.0 / s
+            for j in range(J1):
+                p[j] *= inv
+            for j in range(J1):
+                r = wi * ((1.0 if yi == j + 1 else 0.0) - p[j])
+                o = off[j]
+                if hessian:
+                    c = 0
+                    for a in range(ncols[j]):
+                        if xg[o + a] != 0.0:
+                            g[o + a] += r * xg[o + a]
+                            nzi[o + c] = o + a
+                            c += 1
+                    cnt[j] = c
+                else:
+                    for a in range(ncols[j]):
+                        g[o + a] += r * xg[o + a]
+            if hessian:
+                for j in range(J1):
+                    pj = wi * p[j]
+                    for l in range(j, J1):
+                        v = pj * ((1.0 if j == l else 0.0) - p[l])
+                        for aa in range(cnt[j]):
+                            ra = nzi[off[j] + aa]
+                            va = v * xg[ra]
+                            for bb in range(aa if j == l else 0, cnt[l]):
+                                cb = nzi[off[l] + bb]
+                                Ht[ra, cb] += va * xg[cb]
+        ll_t[t] = llt
+        for k in range(P):
+            g_t[t, k] = g[k]
+        if hessian:
+            for k in range(P):
+                for l in range(P):
+                    H_t[t, k, l] = Ht[k, l]
+
+
+@nb.njit(parallel=True, cache=True)
+def _mnl_pass_tri(X, theta, colmap, pos, ncols, off, y, w, ll_t, g_t, A_t):
+    """`_mnl_pass` with the information for a dense design. Per row, the
+    outer product x x' of the design's K columns (colmap: their columns of
+    `X`) is formed once, as a vector of its K (K + 1) / 2 upper-triangle
+    entries, and added, times the weight w p_j (1[j = l] - p_l), to the
+    accumulator of each pair of equations j <= l: an add of contiguous
+    vectors, which the compiler vectorizes (a scatter into the P x P matrix
+    does not). `_assemble_tri` forms the information from the accumulators
+    `A_t[t]`, keeping each equation's own columns, `pos[j, :ncols[j]]` (their
+    positions among the K) at ``off[j] + a`` in `theta`; for own covariates
+    it also accumulates entries the model does not have, at the cost of
+    some wasted adds."""
+    n = len(y)
+    J1 = len(ncols)
+    K = len(colmap)
+    P = off[J1]
+    ntri = K * (K + 1) // 2
+    n_parts = len(ll_t)
+    has_w = len(w) > 0
+    step = (n + n_parts - 1) // n_parts
+    for t in nb.prange(n_parts):
+        u = np.empty(K)
+        xxt = np.empty(ntri)
+        et = np.empty(J1)
+        p = np.empty(J1)
+        g = np.zeros(P)
+        llt = 0.0
+        acc = np.zeros((J1 * (J1 + 1) // 2, ntri))
+        for i in range(t * step, min(n, (t + 1) * step)):
+            wi = w[i] if has_w else 1.0
+            for c in range(K):
+                u[c] = X[i, colmap[c]]
+            m = 0.0
+            for j in range(J1):
+                o = off[j]
+                e = 0.0
+                for a in range(ncols[j]):
+                    e += u[pos[j, a]] * theta[o + a]
+                et[j] = e
+                if e > m:
+                    m = e
+            s = np.exp(-m)
+            for j in range(J1):
+                p[j] = np.exp(et[j] - m)
+                s += p[j]
+            yi = y[i]
+            lp = -m - np.log(s)
+            if yi > 0:
+                lp += et[yi - 1]
+            llt += wi * lp
+            inv = 1.0 / s
+            for j in range(J1):
+                p[j] *= inv
+            k = 0
+            for c1 in range(K):
+                x1 = u[c1]
+                for c2 in range(c1, K):
+                    xxt[k] = x1 * u[c2]
+                    k += 1
+            pr = 0
+            for j in range(J1):
+                r = wi * ((1.0 if yi == j + 1 else 0.0) - p[j])
+                o = off[j]
+                for a in range(ncols[j]):
+                    g[o + a] += r * u[pos[j, a]]
+                pj = wi * p[j]
+                for l in range(j, J1):
+                    v = pj * ((1.0 if j == l else 0.0) - p[l])
+                    for k in range(ntri):
+                        acc[pr, k] += v * xxt[k]
+                    pr += 1
+        ll_t[t] = llt
+        for k in range(P):
+            g_t[t, k] = g[k]
+        A_t[t] = acc
+
+
+def _assemble_tri(A, pos, ncols, off, K):
+    """The information from `_mnl_pass_tri`'s accumulators (summed over the
+    parts): block (j, l) is the pair's K x K matrix at the rows of equation
+    j's columns and the columns of equation l's."""
+    J1 = len(ncols)
+    tri = np.triu_indices(K)
+    H = np.zeros((off[-1], off[-1]))
+    pr = 0
+    for j in range(J1):
+        pj = pos[j, :ncols[j]]
+        for l in range(j, J1):
+            S = np.zeros((K, K))
+            S[tri] = A[pr]
+            S = S + np.triu(S, 1).T
+            pr += 1
+            B = S[np.ix_(pj, pos[l, :ncols[l]])]
+            H[off[j]:off[j + 1], off[l]:off[l + 1]] = B
+            if l != j:
+                H[off[l]:off[l + 1], off[j]:off[j + 1]] = B.T
+    return H
+
+
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _ord_cdf(x, probit):
+    """The error distribution's cdf: the logistic (as `scipy.special.expit`,
+    stable in both tails) or the standard normal."""
+    if probit:
+        return 0.5 * math.erfc(-x * 0.7071067811865476)
+    if x >= 0.0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
+
+
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _ord_terms(a, b, probit, hessian):
+    """A row of the ordered model, from the limits a and b of its level (the
+    cutpoints less the linear predictor): P = F(a) - F(b) (as S(b) - S(a) in
+    the upper tail), g_a = f(a) / P and g_b = -f(b) / P, and with `hessian`
+    the second derivatives h_aa, h_bb and h_ab (zero without). The pieces of
+    `_Ordered.rows`; returns (P, g_a, g_b, h_aa, h_bb, h_ab)."""
+    Fa = _ord_cdf(a, probit)
+    Sa = _ord_cdf(-a, probit)
+    Fb = _ord_cdf(b, probit)
+    Sb = _ord_cdf(-b, probit)
+    Pr = Sb - Sa if b > 0 else Fa - Fb
+    ac = min(max(a, -40.0), 40.0)
+    bc = min(max(b, -40.0), 40.0)
+    if probit:
+        fa = np.exp(-0.5 * ac * ac) / 2.5066282746310002
+        fb = np.exp(-0.5 * bc * bc) / 2.5066282746310002
+    else:
+        fa = Fa * Sa
+        fb = Fb * Sb
+    ga = fa / Pr
+    gb = -fb / Pr
+    haa = 0.0
+    hbb = 0.0
+    if hessian:
+        if probit:
+            fpa = -ac * fa
+            fpb = -bc * fb
+        else:
+            fpa = fa * (1.0 - 2.0 * Fa)
+            fpb = fb * (1.0 - 2.0 * Fb)
+        haa = fpa / Pr - ga * ga
+        hbb = -fpb / Pr - gb * gb
+        if hessian == 2:
+            # the expected information of a binary outcome (one cutpoint): its
+            # second derivative averaged over the two outcomes is -f^2 / (F S)
+            # at the finite limit, whichever level the row has
+            if b == -np.inf:
+                haa = -fa * fa / (Fa * Sa)
+                hbb = 0.0
+            else:
+                haa = 0.0
+                hbb = -fb * fb / (Fb * Sb)
+            return Pr, ga, gb, haa, hbb, 0.0
+    return Pr, ga, gb, haa, hbb, -ga * gb
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _ord_pass(X, theta, colmap, cuts, y, w, off, probit, hessian, use_nnz, ll_t, g_t, A_t,
+              XC_t, CC_t):
+    """The ordered logit's (probit's, with `probit`) log-likelihood, gradient
+    and information over the rows of a block, in one pass, as `_mnl_pass_tri`
+    does for the multinomial logit: the rows are split into ``len(ll_t)``
+    parts whose sums the caller adds up. The row's level y lies between the
+    cutpoints ``cuts[y - 1]`` and ``cuts[y]`` (open at the ends), a = cut_y -
+    x'b and b = cut_{y-1} - x'b are its limits, and P = F(a) - F(b), taken as
+    S(b) - S(a) in the upper tail. The pieces are those of `_Ordered.rows`:
+    with g_a = f(a) / P, g_b = -f(b) / P, the score in eta is -(g_a + g_b),
+    and the information is h x x' for the covariates (A_t: the upper triangle
+    by rows, K (K + 1) / 2 entries, or with `use_nnz` the entries ``a K + b``
+    of a K x K matrix, formed from the row's nonzeros), q_c x for the
+    covariates against cutpoint c (XC_t), and a tridiagonal block for the
+    cutpoints (CC_t, the superdiagonal in the upper triangle)."""
+    n = len(y)
+    K = len(colmap)
+    C = len(cuts)
+    P = K + C
+    nacc = A_t.shape[1]
+    n_parts = len(ll_t)
+    has_w = len(w) > 0
+    has_off = len(off) > 0
+    step = (n + n_parts - 1) // n_parts
+    for t in nb.prange(n_parts):
+        u = np.empty(K)
+        nz = np.empty(K, np.int64)
+        g = np.zeros(P)
+        acc = np.zeros(nacc)
+        xc = np.zeros((C, K))
+        cc = np.zeros((C, C))
+        llt = 0.0
+        for i in range(t * step, min(n, (t + 1) * step)):
+            wt = w[i] if has_w else 1.0
+            yi = y[i]
+            eta = off[i] if has_off else 0.0
+            for k in range(K):
+                u[k] = X[i, colmap[k]]
+                eta += u[k] * theta[k]
+            a = cuts[yi] - eta if yi < C else np.inf
+            b = cuts[yi - 1] - eta if yi > 0 else -np.inf
+            Pr, ga, gb, haa, hbb, hab = _ord_terms(a, b, probit, hessian)
+            llt += wt * np.log(Pr)
+            s = -(ga + gb) * wt
+            for k in range(K):
+                g[k] += s * u[k]
+            if yi < C:
+                g[K + yi] += ga * wt
+            if yi > 0:
+                g[K + yi - 1] += gb * wt
+            if hessian:
+                h = wt * max(-(haa + 2.0 * hab + hbb), 0.0)
+                cnt = 0
+                if use_nnz:
+                    for k in range(K):
+                        if u[k] != 0.0:
+                            nz[cnt] = k
+                            cnt += 1
+                    for aa in range(cnt):
+                        ra = nz[aa]
+                        hx = h * u[ra]
+                        for bb in range(aa, cnt):
+                            rb = nz[bb]
+                            acc[ra * K + rb] += hx * u[rb]
+                else:
+                    k = 0
+                    for c1 in range(K):
+                        hx = h * u[c1]
+                        for c2 in range(c1, K):
+                            acc[k] += hx * u[c2]
+                            k += 1
+                if yi < C:
+                    q = wt * (haa + hab)
+                    if use_nnz:
+                        for aa in range(cnt):
+                            xc[yi, nz[aa]] += q * u[nz[aa]]
+                    else:
+                        for k in range(K):
+                            xc[yi, k] += q * u[k]
+                    cc[yi, yi] -= wt * haa
+                if yi > 0:
+                    q = wt * (hab + hbb)
+                    if use_nnz:
+                        for aa in range(cnt):
+                            xc[yi - 1, nz[aa]] += q * u[nz[aa]]
+                    else:
+                        for k in range(K):
+                            xc[yi - 1, k] += q * u[k]
+                    cc[yi - 1, yi - 1] -= wt * hbb
+                    if yi < C:
+                        cc[yi - 1, yi] -= wt * hab
+        ll_t[t] = llt
+        for k in range(P):
+            g_t[t, k] = g[k]
+        if hessian:
+            for k in range(nacc):
+                A_t[t, k] = acc[k]
+            for c in range(C):
+                for k in range(K):
+                    XC_t[t, c, k] = xc[c, k]
+                for d in range(C):
+                    CC_t[t, c, d] = cc[c, d]
 
 
 @nb.njit(parallel=True, cache=True)
@@ -262,24 +699,76 @@ class _Model:
 class _Multinomial(_Model):
     kind = "mlogit"
 
-    def __init__(self, xnames, K, levels, intercept):
+    def __init__(self, xnames, K, levels, intercept, own=None):
         super().__init__(xnames, K)
         self.levels = list(levels)
         self.J = len(levels)
         self.intercept = intercept          # index of the Intercept column, or None
+        # own covariates: {design column: the equation (0-based, among the
+        # non-base levels) it enters}. Every other column enters all of them.
+        # The own columns come after the others in the design.
+        self.own = dict(own or {})
+        self._free_cache = None
+
+    # own covariates ----------------------------------------------------------
+    def free(self):
+        """Which of the J - 1 x K coefficients (equation by current column)
+        are estimated: all, but for an own covariate's other equations."""
+        if self._free_cache is None or self._free_cache.shape[1] != self.K:
+            M = np.ones((self.J - 1, self.K), bool)
+            for p, c in enumerate(self.cols):
+                e = self.own.get(int(c))
+                if e is not None:
+                    M[:, p] = False
+                    M[e, p] = True
+            self._free_cache = M
+        return self._free_cache
+
+    def param_cols(self):
+        """The design column (an index into the original columns) of each
+        parameter, in the order of `names`."""
+        if not self.own:
+            return np.tile(self.cols, self.J - 1)
+        return np.broadcast_to(self.cols, (self.J - 1, self.K))[self.free()]
+
+    def _unpack(self, theta):
+        if not self.own:
+            return theta.reshape(self.J - 1, self.K)
+        B = np.zeros((self.J - 1, self.K))
+        B[self.free()] = theta
+        return B
+
+    def keep_columns(self, H, collinear):
+        """Which design columns to keep, from the first step's information:
+        each equation's block (the columns it has) is checked for collinear
+        columns by `collinear`, and a column is dropped if any equation
+        finds it so."""
+        M = self.free()
+        keep = np.ones(self.K, bool)
+        off = 0
+        for e in range(self.J - 1):
+            pos = np.flatnonzero(M[e])
+            n = len(pos)
+            keep[pos] &= collinear(H[off:off + n, off:off + n])
+            off += n
+        return keep
 
     @property
     def P(self):
-        return self.K * (self.J - 1)
+        return int(self.free().sum()) if self.own else self.K * (self.J - 1)
 
     def names(self):
+        if self.own:
+            M = self.free()
+            return [f"{lv}:{self.xnames[c]}" for e, lv in enumerate(self.levels[1:])
+                    for p, c in enumerate(self.cols) if M[e, p]]
         return [f"{lv}:{self.xnames[c]}" for lv in self.levels[1:] for c in self.cols]
 
     def penalized(self):
         pen = np.ones((self.J - 1, self.K), bool)
         if self.intercept is not None and self.intercept in self.cols:
             pen[:, int(np.flatnonzero(self.cols == self.intercept)[0])] = False
-        return pen.ravel()
+        return pen[self.free()] if self.own else pen.ravel()
 
     def start(self, counts, fe=False):
         """Zero slopes, and the intercepts that give each level its sample
@@ -288,12 +777,19 @@ class _Multinomial(_Model):
         B = np.zeros((self.J - 1, self.K))
         if self.intercept is not None and not fe:
             B[:, self.intercept] = np.log(counts[1:] / counts[0])
-        return B.ravel()
+        return B[self.free()] if self.own else B.ravel()
 
     def x_block(self, H):
         return H[:self.K, :self.K], []
 
     def drop(self, keep):
+        if self.own:
+            M = self.free()
+            idx = np.flatnonzero((M & keep[None, :])[M])
+            self.cols = self.cols[keep]
+            if self.intercept is not None and self.intercept not in self.cols:
+                self.intercept = None
+            return idx
         idx = np.flatnonzero(np.tile(keep, self.J - 1))
         self.cols = self.cols[keep]
         if self.intercept is not None and self.intercept not in self.cols:
@@ -304,7 +800,7 @@ class _Multinomial(_Model):
         return self.K * (self.J - 1) if scores else self.K + self.J
 
     def eta(self, theta, X):
-        return X @ theta.reshape(self.J - 1, self.K).T
+        return X @ self._unpack(theta).T
 
     @staticmethod
     def probs(E):
@@ -316,7 +812,74 @@ class _Multinomial(_Model):
         den = e0 + ex.sum(axis=1)
         return ex, e0, den, m + np.log(den)
 
+    def nonzero_form(self):
+        """Whether the fused pass forms the information from each row's
+        nonzeros (a design that is mostly zeros), not its outer product.
+        `density` is set from pass 0's moments."""
+        d = getattr(self, "density", None)
+        return (d is not None and d <= MNL_NNZ_DENSITY and self.P <= SPARSE_MAX_PARAMS
+                and not getattr(self, "dense_only", False))
+
+    def information_form(self, n):
+        """How the information is formed for blocks of about `n` rows, for
+        the fit's diagnostics: ``"outer-product"`` or ``"nonzero"`` (the
+        fused numba pass, from each row's outer product or from its
+        nonzeros), else ``"array"`` (NumPy and BLAS; ``"array-nonzero"``
+        with the older numba kernel for a mostly-zero design)."""
+        if self.kernel_ok(n):
+            return "nonzero" if self.nonzero_form() else "outer-product"
+        return "array-nonzero" if self.sparse(None) else "array"
+
+    def kernel_ok(self, n):
+        """Whether a block of `n` rows is summed by the fused numba pass:
+        not a few rows, and not a dense design of very many columns (BLAS's
+        blocked products win there)."""
+        if n < MNL_KERNEL_MIN_ROWS or self.P == 0:
+            return False
+        return self.nonzero_form() or self.K <= MNL_KERNEL_MAX_K
+
+    def accumulate_full(self, theta, X, cols, y, w, starts, hessian, offset=None):
+        """`accumulate` by the fused numba pass, on the columns `cols` of
+        `X` (a whole block, read in place): the information from each row's
+        nonzeros (`_mnl_pass`) for a mostly-zero design, else from its
+        outer product (`_mnl_pass_tri`)."""
+        M = self.free()
+        J1, K = self.J - 1, M.shape[1]
+        cols = np.asarray(cols)
+        ncols = M.sum(axis=1).astype(np.int64)
+        pos = np.zeros((J1, K), np.int64)
+        for j in range(J1):
+            pos[j, :ncols[j]] = np.flatnonzero(M[j])
+        off = np.r_[0, np.cumsum(ncols)].astype(np.int64)
+        P = int(off[-1])
+        X = np.ascontiguousarray(X)
+        th = np.ascontiguousarray(theta, np.float64)
+        wv = np.empty(0) if w is None else np.ascontiguousarray(w, np.float64)
+        tri = hessian and not self.nonzero_form()
+        ntri = K * (K + 1) // 2
+        # the parts' accumulators are kept to PARTS_MB together: as P x P matrices, or
+        # as the pairs' triangles
+        n_parts = _parts(max(1, len(y) // 256),
+                         int(np.sqrt(J1 * (J1 + 1) // 2 * ntri)) if tri else P)
+        ll_t, g_t = np.zeros(n_parts), np.zeros((n_parts, P))
+        with nb.parallel_chunksize(1):
+            if tri:
+                A_t = np.zeros((n_parts, J1 * (J1 + 1) // 2, ntri))
+                _mnl_pass_tri(X, th, cols, pos, ncols, off, y, wv, ll_t, g_t, A_t)
+                return float(ll_t.sum()), g_t.sum(axis=0), \
+                    _assemble_tri(A_t.sum(axis=0), pos, ncols, off, K)
+            H_t = np.zeros((n_parts, P, P) if hessian else (n_parts, 0, 0))
+            _mnl_pass(X, th, np.where(np.arange(K) < ncols[:, None], cols[pos], 0), ncols, off,
+                      y, wv, bool(hessian), ll_t, g_t, H_t)
+        ll, g = float(ll_t.sum()), g_t.sum(axis=0)
+        if not hessian:
+            return ll, g, None
+        H = H_t.sum(axis=0)
+        return ll, g, np.triu(H) + np.triu(H, 1).T
+
     def accumulate(self, theta, X, y, w, starts, hessian, offset=None):
+        if offset is None and self.kernel_ok(len(y)):
+            return self.accumulate_full(theta, X, np.arange(X.shape[1]), y, w, starts, hessian)
         J1, K = self.J - 1, self.K
         E = self.eta(theta, X)
         if offset is not None:
@@ -331,9 +894,12 @@ class _Multinomial(_Model):
         R[idx, y[idx] - 1] += 1.0
         if w is not None:
             R *= w[:, None]
-        g = (X.T @ R).T.ravel()
+        g = (X.T @ R).T
+        g = g[self.free()] if self.own else g.ravel()
         if not hessian:
             return ll, g, None
+        if self.own:
+            return ll, g, self._information_own(X, P, ex, den, w)
         if self.sparse(X):
             H = np.zeros((J1 * K, J1 * K))
             _mnl_info_sparse(np.ascontiguousarray(X), np.ascontiguousarray(P),
@@ -357,6 +923,70 @@ class _Multinomial(_Model):
                 H[sj, sk] = Hjk
                 H[sk, sj] = Hjk
         return ll, g, H
+
+    def _information_own(self, X, P, ex, den, w):
+        """The information with own covariates: the free parameters' rows and
+        columns only. The common columns are a prefix of the design (the own
+        ones follow), so block (j, l) is the Gram product of the common
+        columns, plus the thin products with the equations' own columns."""
+        J1, K = self.J - 1, self.K
+        M = self.free()
+        if self.sparse(X):
+            own = np.full(K, -1, np.int64)
+            for p, c in enumerate(self.cols):
+                own[p] = self.own.get(int(c), -1)
+            H = np.zeros((J1 * K, J1 * K))
+            _mnl_info_sparse_own(np.ascontiguousarray(X), np.ascontiguousarray(P),
+                                 np.ones(len(X)) if w is None else w, own,
+                                 nb.get_num_threads(), H)
+            for j in range(J1):
+                for k in range(j + 1, J1):
+                    H[k * K:(k + 1) * K, j * K:(j + 1) * K] = \
+                        H[j * K:(j + 1) * K, k * K:(k + 1) * K].T
+            fi = np.flatnonzero(M.ravel())
+            return H[np.ix_(fi, fi)]
+        nc = int(sum(int(c) not in self.own for c in self.cols))
+        Xc = np.ascontiguousarray(X[:, :nc])
+        Xo = np.ascontiguousarray(X[:, nc:])
+        opos = [np.flatnonzero(M[e, nc:]) for e in range(J1)]       # into Xo's columns
+        size = [nc + len(o) for o in opos]
+        off = np.r_[0, np.cumsum(size)]
+        H = np.zeros((off[-1], off[-1]))
+        Pw = P if w is None else P * w[:, None]
+        one_minus = (den[:, None] - ex) / den[:, None]              # 1 - p_j, without cancellation
+        # the common columns' blocks: X_c' diag(v_jk) X_c, v_jk = w p_j (1[j = k] - p_k)
+        if nc:
+            for j in range(J1):
+                for k in range(j, J1):
+                    v = Pw[:, j] * one_minus[:, j] if j == k else Pw[:, j] * P[:, k]
+                    G = _gram(Xc, v) * (1.0 if j == k else -1.0)
+                    H[off[j]:off[j] + nc, off[k]:off[k] + nc] = G
+                    if k != j:
+                        H[off[k]:off[k] + nc, off[j]:off[j] + nc] = G.T
+        # own column b (of equation k) against the common columns and the other own
+        # columns, for every equation j at once: the weights v_jk of all j form one
+        # n x (J-1) matrix, so each own column costs two thin products
+        eq_of = M[:, nc:].argmax(axis=0) if Xo.shape[1] else np.zeros(0, int)
+        pos_of = np.empty(Xo.shape[1], np.int64)           # an own column's parameter index
+        for e in range(J1):
+            pos_of[opos[e]] = off[e] + nc + np.arange(len(opos[e]))
+        for k in range(J1):
+            if not len(opos[k]):
+                continue
+            Vk = -Pw * P[:, [k]]
+            Vk[:, k] = Pw[:, k] * one_minus[:, k]
+            for b in opos[k]:
+                Vb = Vk * Xo[:, [b]]
+                pb = pos_of[b]
+                if nc:
+                    T = Xc.T @ Vb                           # nc x (J-1): column j is block (j, k)
+                    for j in range(J1):
+                        H[off[j]:off[j] + nc, pb] = T[:, j]
+                        H[pb, off[j]:off[j] + nc] = T[:, j]
+                R = Vb.T @ Xo                               # (J-1) x Mo, own against own
+                for a in range(Xo.shape[1]):
+                    H[pos_of[a], pb] = R[eq_of[a], a]
+        return H
 
     def firth_adjustment(self, theta, X, w, A):
         """A chunk's part of Firth's adjustment to the score, the gradient of
@@ -399,6 +1029,9 @@ class _Multinomial(_Model):
         R = -ex / den[:, None]
         idx = np.flatnonzero(y > 0)
         R[idx, y[idx] - 1] += 1.0
+        if self.own:
+            M = self.free()
+            return np.hstack([R[:, [e]] * X[:, M[e]] for e in range(self.J - 1)])
         return (R[:, :, None] * X[:, None, :]).reshape(len(y), -1)
 
 
@@ -467,6 +1100,13 @@ class _Ordered(_Model):
         self.J = len(levels)
         self.C = self.J - 1                 # cutpoints
         self.fix_first = False              # cut1 = 0 (with an absorbed fixed effect)
+        self.expected = False               # the information is the expected one (binary)
+
+    def hmode(self, hessian):
+        """The passes' `hessian` argument: 0 without the information, 1 for the
+        observed one, 2 for the expected one (the binary probit's variance,
+        as for an IRLS fit; the logit's two are equal)."""
+        return (2 if self.expected else 1) if hessian else 0
 
     @property
     def n_cuts(self):
@@ -548,6 +1188,12 @@ class _Ordered(_Model):
         haa = fpa / P - ga ** 2
         hbb = -fpb / P - gb ** 2
         hab = -ga * gb
+        if self.expected:                   # binary: -f^2 / (F S) at the finite limit
+            lowest = y == 0
+            x = np.where(lowest, a, b)
+            fx = np.where(lowest, fa, fb)
+            ex = -(fx * fx) / (self.link.cdf(x) * self.link.sf(x))
+            haa, hbb, hab = np.where(lowest, ex, 0.0), np.where(lowest, 0.0, ex), 0.0 * ga
         up, lo = y < C, y > 0
         iu, il = np.flatnonzero(up), np.flatnonzero(lo)
         Q = np.zeros((len(y), C))
@@ -557,7 +1203,73 @@ class _Ordered(_Model):
                    haa=-(wt * haa), hbb=-(wt * hbb), hab=-(wt * hab))
         return out
 
+    def nonzero_form(self):
+        """Whether the fused pass forms the information from each row's
+        nonzeros (a design that is mostly zeros), not its outer product."""
+        d = getattr(self, "density", None)
+        return d is not None and d <= ORD_NNZ_DENSITY
+
+    def kernel_ok(self, n):
+        """Whether a block of `n` rows is summed by the fused numba pass
+        (`_ord_pass`). With an absorbed fixed effect (`fix_first`) the fixed
+        effect's own passes run, not this one."""
+        if n < MNL_KERNEL_MIN_ROWS or self.fix_first or self.K == 0:
+            return False
+        return self.K <= (ORD_NNZ_MAX_K if self.nonzero_form() else ORD_KERNEL_MAX_K)
+
+    def information_form(self, n):
+        """How the information is formed, for the fit's diagnostics:
+        ``"outer-product"`` or ``"nonzero"`` (the fused numba pass), else
+        ``"array"`` (NumPy and BLAS)."""
+        if self.kernel_ok(n):
+            return "nonzero" if self.nonzero_form() else "outer-product"
+        return "array"
+
+    def accumulate_full(self, theta, X, cols, y, w, starts, hessian, offset=None):
+        """`accumulate` by the fused numba pass, on the columns `cols` of `X`
+        (a whole block, read in place)."""
+        K, C = self.K, self.C
+        use_nnz = bool(hessian and self.nonzero_form())
+        nacc = (K * K if use_nnz else K * (K + 1) // 2) if hessian else 0
+        P = K + C
+        n_parts = _parts(max(1, len(y) // 256), int(np.sqrt(nacc + C * K + C * C + P)))
+        ll_t, g_t = np.zeros(n_parts), np.zeros((n_parts, P))
+        A_t = np.zeros((n_parts, nacc))
+        XC_t = np.zeros((n_parts, C if hessian else 0, K))
+        CC_t = np.zeros((n_parts, C if hessian else 0, C))
+        empty = np.empty(0)
+        with nb.parallel_chunksize(1):
+            _ord_pass(np.ascontiguousarray(X), np.ascontiguousarray(theta, np.float64),
+                      np.asarray(cols, np.int64), np.ascontiguousarray(self.cuts(theta)), y,
+                      empty if w is None else np.ascontiguousarray(w, np.float64),
+                      empty if offset is None else np.ascontiguousarray(offset, np.float64),
+                      self.link.name == "probit", self.hmode(hessian), use_nnz, ll_t, g_t, A_t,
+                      XC_t,
+                      CC_t)
+        ll = float(ll_t.sum())
+        if not np.isfinite(ll):
+            return -np.inf, None, None
+        g = g_t.sum(axis=0)
+        if not hessian:
+            return ll, g, None
+        H = np.zeros((P, P))
+        if use_nnz:
+            S = A_t.sum(axis=0).reshape(K, K)
+        else:
+            S = np.zeros((K, K))
+            S[np.triu_indices(K)] = A_t.sum(axis=0)
+        H[:K, :K] = S + np.triu(S, 1).T
+        xc = XC_t.sum(axis=0)
+        H[:K, K:] = xc.T
+        H[K:, :K] = xc
+        cc = CC_t.sum(axis=0)
+        H[K:, K:] = np.triu(cc) + np.triu(cc, 1).T
+        return ll, g, H
+
     def accumulate(self, theta, X, y, w, starts, hessian, offset=None):
+        if self.kernel_ok(len(y)):
+            return self.accumulate_full(theta, X, np.arange(X.shape[1]), y, w, starts, hessian,
+                                        offset)
         return self._assemble(self.rows(theta, X, y, w, offset, hessian), X, y, w, hessian)
 
     def _assemble(self, r, X, y, w, hessian):

@@ -45,6 +45,8 @@ from .api import (
     probit_stream,
 )
 from .results import (
+    BinaryLogitResult,
+    BinaryProbitResult,
     ConditionalFELogitResult,
     ConditionalLogitResult,
     LogitMulti,
@@ -62,7 +64,7 @@ def _version():
         from importlib.metadata import version
         return version("logit-stream")
     except Exception:                   # noqa: BLE001 -- not installed
-        return "0.3.1"
+        return "0.4.0"
 
 
 __version__ = _version()
@@ -70,7 +72,8 @@ __version__ = _version()
 __all__ = [
     "logit_stream", "probit_stream", "mlogit_stream", "ologit_stream", "oprobit_stream",
     "clogit_stream", "cfelogit_stream", "mixlogit_stream", "nlogit_stream",
-    "LogitResult", "MultinomialLogitResult", "OrderedLogitResult", "OrderedProbitResult",
+    "LogitResult", "BinaryLogitResult", "BinaryProbitResult", "MultinomialLogitResult",
+    "OrderedLogitResult", "OrderedProbitResult",
     "ConditionalLogitResult", "ConditionalFELogitResult",
     "MixedLogitResult", "NestedLogitResult",
     "LogitMulti", "etable", "bonferroni", "holm", "__version__",

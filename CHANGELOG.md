@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0
+
+New
+- **`mlogit_stream(own_covariates=...)`: covariates that enter only their own level's equation.**
+  For example, each group's baseline share can predict that group alone, leaving out the other
+  groups' shares. This drops the off-diagonal coefficients, which are often poorly determined
+  where the groups are segregated, and fits fewer parameters.
+- **`logit_stream` and `probit_stream` have their own engine** for no fixed effect or one, about
+  2 times faster than hdfe-stream's. They fit the two-level ordered logit or probit with this
+  package's Newton iterations and return a `BinaryLogitResult` or `BinaryProbitResult` (new
+  classes; `predict(type="class")` is new). Estimates are at the maximum to machine precision
+  (Newton's decrement judges convergence; `iwls_tol` and `iwls_maxiter` still work). Coefficients,
+  variances, degrees of freedom, fit statistics, `fixef`, `predict`, `resid` and `sample` agree
+  with `feglm_stream`'s; the probit's variances use the expected information, as its iteratively
+  reweighted fit does. Several fixed effects, `bias_correction=True`, `bootcluster=`, CRV3,
+  `separation_check=False` and `profile=True` still run `feglm_stream` and return its
+  `HDFEResult`.
+
+Faster (estimates unchanged)
+- **Multinomial logit** without fixed effects: about 5 times on dense designs, 1.3-1.8 times on
+  designs of indicators. **Ordered logit and probit** without fixed effects: about 4 times. Each
+  pass over the data is now one fused parallel kernel.
+- **Multinomial and ordered logit with an absorbed fixed effect:** 2-4 times. The first pass
+  writes the rows grouped by the fixed effect, so each thread owns whole groups. Fixed effects
+  with many small groups are a further 1.5-2 times faster, and the ordered logit and probit no
+  longer slow down with many groups (100,000 groups: 47 s, now 2 s).
+- **Robust and clustered variances:** 3-18 times faster for the multinomial and ordered logit, and
+  2.5-7 times for the conditional logit and `cfelogit_stream`, from a fused kernel that forms each
+  score in a thread.
+- `fit.diagnostics["information"]` says how the information matrix was formed.
+
+Fixed
+- Cluster counts `G` and degrees of freedom count only clusters with rows used, and analytic
+  weights are rescaled over the rows used after a fixed effect's separation drops some, in the
+  binary, multinomial and ordered logit, as hdfe-stream does. Before, the multinomial and ordered
+  logit counted clusters whose rows were all dropped (variances slightly small) and scaled the
+  weights over all rows read (iid variance and log-likelihoods).
+- Sorting rows by a fixed effect respects `max_memory_gb`: rows not already grouped are
+  partitioned in memory to sort them, and when that would not fit they stay in their order and the
+  passes are slower.
+- `resid()` of a result fitted with an offset works.
+- The within pseudo R-squared is nan for an ordered or multinomial fit with an offset and an
+  absorbed fixed effect (the fixed-effect-only log-likelihood it came from ignored the offset).
+
 ## 0.3.1
 
 - **Works with pyfixest 0.60 and 0.70.** Formulas are read through hdfe-stream's own formula
