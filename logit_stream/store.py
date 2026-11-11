@@ -98,11 +98,12 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
            weights: str | None, clusters: dict, case: list | None, levels: list | None,
            in_memory: bool, dtype, block_mb: float, log, panel: list | None = None,
            offset: pl.Expr | None = None, weights_type: str = "aweights",
-           altwise: bool = False, sort_fe: bool = False) -> _Pass0:
+           altwise: bool = False, sort_fe: bool = False, budget=None) -> _Pass0:
     """Pass 0 for one model (see the module docstring). With `sort_fe` the
     rows are written grouped by the one fixed effect (a group's rows
     consecutive, each group in one block; the passes of fe_kernels.py need
-    that), unless one group is too big for a block.
+    that), unless one group is too big for a block or, when the rows are not
+    grouped already, partitioning them would not fit in `budget`'s headroom.
 
     `clusters` maps each clustering's name to its source columns; `case` is
     the conditional logit's choice-set columns, and `panel` the mixed
@@ -321,6 +322,14 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
             if not fe_sorted:
                 log(f"pass 0: the largest level of {d} has {big:,} rows, more than a block "
                     "holds; the rows stay in their order")
+            elif budget is not None and not _grouped(engine, design_path, cols,
+                                                     fe_tables[d].height):
+                need = _partition_gb(design_path, rows)
+                if need > budget.headroom_gb():
+                    fe_sorted = False
+                    log(f"pass 0: sorting the rows by {d} needs about {need:.1f} GB and "
+                        f"{budget.headroom_gb():.1f} GB is free ({budget}); the rows stay in "
+                        "their order (slower passes)")
         if fe_sorted:
             for frame in iter_groups(engine, design_path, cols, rows, run_dir,
                                      fe_tables[d].height, [*cols, ROW], log=log):
@@ -335,6 +344,26 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
                   n_cases=n_cases, wcases=wcases, n_panels=n_panels, usable=usable,
                   xmeans=xmeans, xsd=xsd, xbinary=xbinary, xnonzero=xnonzero,
                   seconds=round(time.time() - t0, 2))
+
+
+_WIDTH = {pl.Int8: 1, pl.UInt8: 1, pl.Int16: 2, pl.UInt16: 2, pl.Int32: 4, pl.UInt32: 4,
+          pl.Float32: 4, pl.Boolean: 1}
+
+
+def _grouped(engine, path, cols, n_groups):
+    """Whether each group's rows of the file are consecutive already (then
+    `iter_groups` partitions nothing)."""
+    starts = pl.any_horizontal([(pl.col(c) != pl.col(c).shift()).fill_null(True) for c in cols])
+    runs = engine.collect(pl.scan_parquet(path).select(starts.sum().alias("r")), "group runs")
+    return int(runs["r"].item()) == n_groups
+
+
+def _partition_gb(path, rows):
+    """The memory `iter_groups` needs to sort one bucket of ungrouped rows: a
+    bucket holds up to max(8 * rows, 1M) rows, and collecting, sorting and
+    slicing it holds about three copies."""
+    width = sum(_WIDTH.get(dt, 8) for dt in pl.scan_parquet(path).collect_schema().values())
+    return 3 * max(8 * rows, 1_000_000) * width / 1e9
 
 
 def _case_order(engine, design, design_path, case, weights, spec, rows, convert, run_dir,

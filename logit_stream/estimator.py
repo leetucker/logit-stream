@@ -360,7 +360,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                              and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
-                    altwise=altwise)
+                    altwise=altwise, budget=budget)
         disk_peak = p0.store.bytes if storage == "disk" else 0
         if binary:
             try:

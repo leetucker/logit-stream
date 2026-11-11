@@ -236,3 +236,21 @@ def test_the_variance_pass_keeps_the_numpy_code_for_many_slopes(vdata, monkeypat
     monkeypatch.setattr(fe_mod, "FE_MEAT_MAX_P", 3)
     ologit_stream(f"yo ~ {RHS} | g", vdata, vcov="hetero", verbose=False)
     assert calls["n"] == 0
+
+
+def test_rows_that_cannot_be_sorted_inside_the_memory_limit_stay_unsorted(data, monkeypatch):
+    """Sorting ungrouped rows partitions them in memory; with too little room
+    the rows stay in their order (the same estimates), but rows already
+    grouped by the fixed effect are sorted whatever the room."""
+    seen = _spy(monkeypatch)
+    sorted_fit = ologit_stream(f"yo ~ {RHS} | g", data, verbose=False)
+    assert seen["blocks"] > 0
+    seen["blocks"] = 0
+    monkeypatch.setattr("logit_stream.store._partition_gb", lambda path, rows: 1e6)
+    tight = ologit_stream(f"yo ~ {RHS} | g", data, verbose=False)
+    assert seen["blocks"] == 0
+    assert np.allclose(tight.beta, sorted_fit.beta, rtol=0, atol=1e-8)
+    seen["blocks"] = 0
+    ologit_stream(f"yo ~ {RHS} | g", data.sort("g"), verbose=False)
+    assert seen["blocks"] > 0
+

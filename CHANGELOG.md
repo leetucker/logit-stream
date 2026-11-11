@@ -24,6 +24,9 @@
   variance (`G` and the degrees of freedom count the clusters of the rows used), and analytic
   weights are rescaled over the rows used after a fixed effect's separation drops some, as
   hdfe-stream does.
+- **A fixed effect's sort of the rows respects `max_memory_gb`.** Rows not already grouped by the
+  fixed effect are partitioned in memory to sort them; when that would not fit, they stay in their
+  order and the passes are slower.
 - **`resid()` of a result fitted with an offset works** (the offset's column was not read).
 - **The within pseudo R-squared is not reported (nan) for an ordered or multinomial fit with an offset and an
   absorbed fixed effect**: the fixed-effect-only log-likelihood it was computed from ignored the offset.
