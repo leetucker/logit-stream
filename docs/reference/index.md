@@ -13,7 +13,7 @@ which are in `logit_stream.simulate`.
 | `cfelogit_stream` | Chamberlain's conditional fixed-effects logit for panels |
 | `nlogit_stream`, `mixlogit_stream` | nested and mixed logit (experimental) |
 | **[Results](results.md)** | |
-| `MultinomialLogitResult`, `OrderedLogitResult`, `OrderedProbitResult`, `ConditionalLogitResult`, `ConditionalFELogitResult`, `NestedLogitResult`, `MixedLogitResult` | one model: coefficients, standard errors, fit statistics, predictions, residuals, fixed or random effects |
+| `BinaryLogitResult`, `MultinomialLogitResult`, `OrderedLogitResult`, `OrderedProbitResult`, `ConditionalLogitResult`, `ConditionalFELogitResult`, `NestedLogitResult`, `MixedLogitResult` | one model: coefficients, standard errors, fit statistics, predictions, residuals, fixed or random effects |
 | `LogitResult` | what they share |
 | `LogitMulti` | a formula that expands to several models |
 | **[Utilities](utilities.md)** | |

@@ -45,6 +45,7 @@ from .api import (
     probit_stream,
 )
 from .results import (
+    BinaryLogitResult,
     ConditionalFELogitResult,
     ConditionalLogitResult,
     LogitMulti,
@@ -70,7 +71,7 @@ __version__ = _version()
 __all__ = [
     "logit_stream", "probit_stream", "mlogit_stream", "ologit_stream", "oprobit_stream",
     "clogit_stream", "cfelogit_stream", "mixlogit_stream", "nlogit_stream",
-    "LogitResult", "MultinomialLogitResult", "OrderedLogitResult", "OrderedProbitResult",
+    "LogitResult", "BinaryLogitResult", "MultinomialLogitResult", "OrderedLogitResult", "OrderedProbitResult",
     "ConditionalLogitResult", "ConditionalFELogitResult",
     "MixedLogitResult", "NestedLogitResult",
     "LogitMulti", "etable", "bonferroni", "holm", "__version__",

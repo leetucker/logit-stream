@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **`logit_stream` is about 2 times faster with no fixed effect or one, and its estimates are at
+  the maximum to machine precision.** It now fits the binary logit as the two-level ordered logit
+  (the cutpoint is minus the intercept) with this package's Newton iterations over the stored blocks
+  and fused kernels, and returns a `BinaryLogitResult`. The coefficients, variances (every
+  `vcov`, with hdfe-stream's and pyfixest's small-sample factors, a fixed effect nested in the
+  clusters left out of $K$), degrees of freedom, `loglik`, `aic`, `bic`, `fixef`, `predict`, `resid`
+  and `sample` agree with `feglm_stream`'s to 1e-12 or better. Newton's decrement judges
+  convergence (hdfe-stream's relative change in deviance leaves the coefficients about 1e-7 from the
+  maximum); `iwls_tol` and `iwls_maxiter` are still accepted and mean the Newton tolerance and
+  maximum. Several fixed effects, `bias_correction=True`, `bootcluster=`, CRV3 and
+  `separation_check=False` still run hdfe-stream's engine and return its `HDFEResult`;
+  `probit_stream` always does. `predict(type="class")` is new.
+- **A cluster whose rows were all dropped is not counted** in a binary logit's cluster-robust
+  variance (`G` and the degrees of freedom count the clusters of the rows used), and analytic
+  weights are rescaled over the rows used after a fixed effect's separation drops some, as
+  hdfe-stream does.
+- **`resid()` of a result fitted with an offset works** (the offset's column was not read).
+- **The within pseudo R-squared is not reported (nan) for an ordered or multinomial fit with an offset and an
+  absorbed fixed effect**: the fixed-effect-only log-likelihood it was computed from ignored the offset.
 - **Robust and clustered variances of the multinomial and ordered logit are 3-18 times faster.** The
   extra pass that forms the variance's middle matrices is now a fused parallel kernel: each row's
   score is formed in registers and added to the outer-product sums for `hetero` and to each

@@ -184,16 +184,68 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
 
     Notes
     -----
-    Two conventions are hdfe-stream's (and pyfixest's) rather than this
-    package's: convergence is judged on the relative change in deviance
-    (``iwls_tol``), and the iid vcov has the factor (N - 1) / (N - K).
+    With no fixed effect or one, and none of hdfe-stream's options that have
+    no counterpart here (``bias_correction``, ``bootcluster``, a CRV3
+    variance, the separation check switched off, ...), the fit is this
+    package's: the two-level ordered logit's Newton iterations over the
+    stored blocks (see `ologit_stream`), reported as a `BinaryLogitResult`
+    with hdfe-stream's conventions for the variance (the iid vcov has the
+    factor (N - 1) / (N - K)) and for the coefficients (``Intercept`` first).
+    It converges on the Newton decrement (``iwls_tol``, if given, is that
+    tolerance; default 1e-8), so the estimates are at the maximum to machine
+    precision. Otherwise the fit is hdfe-stream's, `feglm_stream`, whose
+    convergence is judged on the relative change in deviance.
     A two-level `mlogit_stream` fits the same model, with this package's
-    conventions, but absorbs at most one fixed effect; it is also the way
-    to Firth's penalized likelihood for a binary outcome (``firth=True``).
+    conventions for the variance; it is also the way to Firth's penalized
+    likelihood for a binary outcome (``firth=True``).
     """
+    route = _binary_route(vcov, cluster, options)
+    if route is not None:
+        from .estimator import _fit, _NeedsHdfe
+        try:
+            return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
+                        _binary=True, **route)
+        except _NeedsHdfe:
+            pass
     from hdfe_stream import feglm_stream
     return feglm_stream(fml, data, "logit", workdir=workdir, vcov=vcov, cluster=cluster,
                         **options)
+
+
+# options of hdfe-stream's `feglm_stream` that the fit here ignores (it has no
+# row files, it counts a single fixed effect's parameters without `fe_dof`, and
+# it reports the within pseudo R-squared whenever there is a fixed effect)
+_BINARY_IGNORED = {"save_resid", "within_pseudo_r2", "fe_dof"}
+
+
+def _binary_route(vcov, cluster, options):
+    """The options for this package's fit of a binary logit, or None when only
+    hdfe-stream's does it: an option it has no counterpart of
+    (``bias_correction``, ``bootcluster``, ...), the separation check
+    switched off, or CRV3."""
+    import inspect
+    from .estimator import _fit
+    known = set(inspect.signature(_fit).parameters) - {
+        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2", "random",
+        "random_cov", "random_tol", "random_method", "firth", "device", "link", "altwise",
+        "poisson_options", "profile", "own_covariates", "_binary"}
+    opts = dict(options)
+    for k in _BINARY_IGNORED:
+        opts.pop(k, None)
+    if opts.pop("separation_check", True) is not True:
+        return None
+    if "iwls_tol" in opts:
+        opts["tol"] = opts.pop("iwls_tol")
+    if "iwls_maxiter" in opts:
+        opts["maxiter"] = opts.pop("iwls_maxiter")
+    if any(k not in known for k in opts):
+        return None
+    vs = [vcov] + ([cluster] if isinstance(cluster, str) else list(cluster or []))
+    if any("CRV3" in (v if isinstance(v, str) else " ".join(map(str, v))) for v in vs):
+        return None
+    if options.get("fe_dof", "exact") not in ("exact", "pyfixest"):
+        return None
+    return opts
 
 
 def mlogit_stream(fml: str, data: Source, workdir: PathLike | None = None,

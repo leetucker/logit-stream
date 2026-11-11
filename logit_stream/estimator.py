@@ -37,6 +37,7 @@ from .results import (
     ConditionalLogitResult,
     LogitMulti,
     MultinomialLogitResult,
+    BinaryLogitResult,
     OrderedLogitResult,
     OrderedProbitResult,
     _ic,
@@ -47,6 +48,61 @@ WORKDIR_ENV = "LOGIT_STREAM_WORKDIR"
 
 _KINDS = {"mlogit": "multinomial logit", "ologit": "ordered logit",
           "clogit": "conditional logit", "cfelogit": "conditional fixed-effects logit"}
+
+
+class _NeedsHdfe(Exception):
+    """A binary fit that only hdfe-stream's engine does (several absorbed
+    fixed effects): `logit_stream` catches it and runs `feglm_stream`."""
+
+
+def _ratio(a, b):
+    return a / b if b > 0 else np.nan
+
+
+def _nested_in_cluster(p0, fe, col):
+    """Whether every level of the absorbed fixed effect (among the rows
+    used) lies in one cluster of the store's cluster column `col`: then the
+    cluster-robust variance does not count that effect's parameters."""
+    G = int(max(1, getattr(fe, "G", 1)))
+    lo = np.full(G, np.iinfo(np.int64).max)
+    hi = np.full(G, -1)
+    keep_g = getattr(fe, "keep_g", None)
+    for blk in p0.store:
+        f = np.asarray(blk["fe"], dtype=np.int64)
+        c = np.asarray(blk["cl"][:, col], dtype=np.int64)
+        if keep_g is not None:
+            m = keep_g[f]
+            f, c = f[m], c[m]
+        np.minimum.at(lo, f, c)
+        np.maximum.at(hi, f, c)
+    seen = hi >= 0
+    return bool(np.all(lo[seen] == hi[seen]))
+
+
+def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req):
+    """The binary logit's report from the two-level ordered fit's: the
+    variances scaled as hdfe-stream's and pyfixest's are, K = P + k_fe
+    (iid (N - 1) / (N - K), hetero N / (N - K), clustered times
+    (N - 1) / (N - Kc), Kc counting the fixed effect only if it is not nested
+    in the request's clusters), and the cutpoint as the intercept (minus it,
+    first)."""
+    K = P + k_fe
+    fac = {"iid": _ratio(N - 1, N - K), "hetero": _ratio(N - 1, N - K)}
+    out = {}
+    for key, (V, df) in all_vcovs.items():
+        if key in fac:
+            out[key] = (V * fac[key], int(N - K))
+        else:
+            Kc = P + (1 if nested_by_req.get(key) else k_fe)
+            fac[key] = _ratio(N - 1, N - Kc)
+            out[key] = (V * fac[key], df)
+    if names and names[-1] == "cut1":
+        perm = np.r_[P - 1, np.arange(P - 1)]
+        sgn = np.r_[-1.0, np.ones(P - 1)]
+        out = {k: ((V[np.ix_(perm, perm)] * np.outer(sgn, sgn)), df) for k, (V, df) in out.items()}
+        beta = np.asarray(beta)[perm] * sgn
+        names = ["Intercept"] + list(names[:-1])
+    return names, beta, out, fac
 
 
 def _log(verbose, msg, logger=None, level=None):
@@ -111,7 +167,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
          max_memory_gb: float | None = None, memory_reserve: float | None = None,
-         own_covariates: dict | None = None):
+         own_covariates: dict | None = None, _binary: bool = False):
     if own_covariates is not None:
         own_covariates = _check_own(kind, own_covariates, random=random, firth=firth,
                                     profile=profile, device=device, poisson=poisson_options)
@@ -220,6 +276,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             # the groupings' codes are the store's fe, fe2, ... in this order
             spec = replace(spec, fe=[*random, *spec.fe])
         elif spec.fe:
+            if _binary and len(spec.fe) > 1:
+                raise _NeedsHdfe
             if kind == "clogit":
                 raise ValueError(f"{spec.fml}: fixed effects are not available for the "
                                  "conditional logit (a characteristic of the choice set "
@@ -277,7 +335,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 random_tol=random_tol, random_method=random_method,
                                 firth=firth, offset=offset, start=start, device=device,
                                 link=link, altwise=altwise, budget=budget,
-                                own_covariates=own_covariates))
+                                own_covariates=own_covariates, binary=_binary))
     if profile:
         from .profile import combine_profiles
         return combine_profiles(results)
@@ -288,7 +346,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
              random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
-             device=None, link="logit", altwise=False, budget=None, own_covariates=None):
+             device=None, link="logit", altwise=False, budget=None, own_covariates=None,
+             binary=False):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -303,6 +362,14 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
                     altwise=altwise)
         disk_peak = p0.store.bytes if storage == "disk" else 0
+        if binary:
+            try:
+                ok = [float(v) for v in p0.levels] == [0.0, 1.0]
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise ValueError(f"{spec.fml}: logit needs a dependent variable of 0s and 1s; "
+                                 f"its values are {list(p0.levels)[:6]}")
         xnames = [nm for nm, _ in spec.x]
         K = len(xnames)
         if kind == "mlogit":
@@ -386,13 +453,24 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             # (the coefficients' block of the inverse of the whole information)
             sg = re_info["sigma"]
             Vi = Vi + sg["J"] @ sg["vcov"] @ sg["J"].T
-        all_vcovs = {"iid": (Vi, int(N - P))}
+        # analytic weights are scaled to a mean of one over the rows read, before
+        # a fixed effect's separation drops some: the binary logit rescales them
+        # over the rows used, as hdfe-stream does (it matters to the iid vcov and
+        # the log-likelihood, not to the robust variances)
+        wfix = (p0.n_obs / p0.wsum if binary and weights and weights_type != "fweights"
+                and p0.wsum > 0 else 1.0)
+        all_vcovs = {"iid": (Vi / wfix, int(N - P))}
         n_clusters = {}
         if hetero or clusters:
             log("final pass: scores for the robust variance")
             cl_index = {k: (i, int(p0.cluster_tables[k].height))
                         for i, k in enumerate(clusters)}
             M, U = driver.meat(fit.theta, fit.H, weights_type, cl_index, hetero)
+            if binary:
+                # a cluster whose rows were all dropped (a fixed effect's separation)
+                # is not one: G counts the clusters of the rows used
+                cl_index = {k: (i, int(np.count_nonzero(np.any(U[k] != 0, axis=1))))
+                            for k, (i, _) in cl_index.items()}
             Hinv = driver.inverse(fit.H) if fe is None else None
             if hetero:
                 all_vcovs["hetero"] = (_sandwich(fe, fit, Hinv, M) * N / max(N - 1, 1),
@@ -425,9 +503,12 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             c = p0.counts
             ll0 = float(np.sum(c * np.log(c / c.sum())))
         k_fe = fe.n_params if fe is not None else 0
+        ll, ll0 = ll * wfix, ll0 * wfix
         aic, bic = _ic(ll, P + k_fe, N)
         # the null with only the fixed effect: free, from its outcome counts
-        ll_fe0 = fe.loglik_fe_only() if fe is not None and random is None else np.nan
+        # (with an offset the groups' shares are not the fixed-effect-only fit: none is reported)
+        ll_fe0 = (fe.loglik_fe_only() * wfix
+                  if fe is not None and random is None and offset is None else np.nan)
         diagnostics = {
             "newton": {"iterations": fit.iterations, "converged": fit.converged,
                        "decrement": fit.decrement, "step_halvings": fit.halvings,
@@ -464,11 +545,28 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             diagnostics["separation"] = fe.separation
         _separation_warning(spec, model, beta, np.sqrt(np.diag(all_vcovs["iid"][0])), fit, p0,
                             logger)
+        if binary:
+            nested_by_req, nested_terms = {}, {}
+            if fe is not None and requests:
+                for req, parts in requests.items():
+                    for one, _, _ in parts:
+                        if one not in nested_terms:
+                            nested_terms[one] = _nested_in_cluster(p0, fe, cl_index[one][0])
+                    nested_by_req[req] = any(nested_terms[one] for one, _, _ in parts)
+            names, beta, all_vcovs, vfac = _binary_report(names, beta, all_vcovs, N, P, k_fe,
+                                                          nested_by_req)
+            V, df_t = all_vcovs[vkey]
+            diagnostics["irls"] = {"iterations": fit.iterations, "converged": fit.converged,
+                                   "decrement": fit.decrement, "tol": tol,
+                                   "step_halvings": fit.halvings}
+            diagnostics["vcov_factors"] = {k: float(v) for k, v in vfac.items()}
+            diagnostics["nested_in_cluster"] = {k: bool(v) for k, v in nested_by_req.items()}
         common = dict(fml=spec.fml, depvar=spec.depvar, coefnames=names, beta=beta, vcov=V,
                       vcov_type=vkey, df_t=df_t, n_obs=int(N) if float(N).is_integer() else N,
                       all_vcovs=all_vcovs, n_clusters=n_clusters, collin_vars=fit.dropped,
                       diagnostics=diagnostics, weights=weights, weights_type=weights_type,
-                      model=("ordered probit" if link == "probit" else _KINDS[kind]),
+                      model=("binary logit" if binary else
+                             "ordered probit" if link == "probit" else _KINDS[kind]),
                       loglik=ll, loglik_null=ll0,
                       pseudo_r2=float(1 - ll / ll0) if ll0 else np.nan, aic=aic, bic=bic,
                       loglik_fe_null=ll_fe0,
@@ -503,8 +601,13 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             res = MultinomialLogitResult(**common, levels=list(p0.levels), base=p0.levels[0],
                                          _spec=rspec)
         elif kind == "ologit":
-            cls = OrderedProbitResult if link == "probit" else OrderedLogitResult
-            res = cls(**common, levels=list(p0.levels), _spec=rspec)
+            if binary:
+                common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None else {})
+                res = BinaryLogitResult(**common, levels=list(p0.levels), family="logit",
+                                        deviance=float(-2 * ll), k_fe=int(k_fe), _spec=rspec)
+            else:
+                cls = OrderedProbitResult if link == "probit" else OrderedLogitResult
+                res = cls(**common, levels=list(p0.levels), _spec=rspec)
         elif kind == "cfelogit":
             res = ConditionalFELogitResult(**common, unit=list(case),
                                            n_units=p0.units["units"],

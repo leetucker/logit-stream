@@ -92,7 +92,8 @@ def test_grouped_kernels_equal_the_passes_over_unsorted_rows(data, monkeypatch, 
     np.testing.assert_allclose(fast.beta, ref.beta, rtol=1e-8, atol=1e-9)
     np.testing.assert_allclose(fast.se, ref.se, rtol=1e-7)
     assert fast.loglik == pytest.approx(ref.loglik, rel=1e-11)
-    assert fast.loglik_fe_null == pytest.approx(ref.loglik_fe_null, rel=1e-10)
+    # (nan with an offset, in both)
+    np.testing.assert_allclose(fast.loglik_fe_null, ref.loglik_fe_null, rtol=1e-10)
 
 
 def test_a_level_too_big_for_a_block_leaves_the_rows_unsorted(data, monkeypatch):

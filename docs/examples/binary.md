@@ -8,9 +8,17 @@ $$
 
 with $F$ the logistic distribution function (`logit_stream`) or the
 standard normal's (`probit_stream`), and $\alpha$ the fixed effects, if
-any. Both are hdfe-stream's `feglm_stream`, so they absorb any number of
-fixed effects, and their options and result (an `hdfe_stream.HDFEResult`)
-are hdfe-stream's ([its guide](https://leetucker.github.io/hdfe-stream/examples/glm.html)).
+any. Both absorb any number of fixed effects. `logit_stream` with no fixed
+effect or one fits the model with this package's Newton iterations over a
+stored copy of the data (the two-level ordered logit, whose cutpoint is minus
+the intercept) and returns a `BinaryLogitResult`; with several fixed effects,
+or an option only hdfe-stream has (`bias_correction=True`, `bootcluster=`, a
+CRV3 variance), it is hdfe-stream's `feglm_stream`, and its result an
+`hdfe_stream.HDFEResult` ([its
+guide](https://leetucker.github.io/hdfe-stream/examples/glm.html)).
+`probit_stream` is always `feglm_stream`. Both results have the same
+coefficients, variances, fit statistics, `predict`, `resid` and `fixef`;
+the conventions are hdfe-stream's and pyfixest's, below.
 
 ## Logit and probit
 
@@ -81,11 +89,12 @@ logit.predict(new, type="response").collect()
 two = mlogit_stream(f"hispanic ~ {X} | puma", people, levels=[0, 1], vcov={"CRV1": "puma"})
 ```
 
-The estimates agree to 6e-11. The differences are conventions: hdfe-stream
-judges convergence by the relative change in deviance and gives the iid
-variance pyfixest's factor $(N - 1) / (N - K)$; `mlogit_stream` stops on
-the Newton decrement and uses Stata's conventions for maximum likelihood
-(no factor for the iid variance). `mlogit_stream` absorbs one fixed effect
+The estimates agree to 6e-11. The difference is a convention: `logit_stream`
+gives every variance pyfixest's small-sample factor (the iid variance
+$(N - 1) / (N - K)$, with $K$ counting the fixed effect's parameters), and
+`mlogit_stream` uses Stata's conventions for maximum likelihood (no factor
+for the iid variance). Both stop on the Newton decrement, so their estimates
+are at the maximum to machine precision. `mlogit_stream` absorbs one fixed effect
 directly (two or more through a Poisson regression; see [fixed
 effects](fixed_effects.md)) and offers what hdfe-stream's binary models do
 not: random intercepts, the ridge penalty `l2=`, the cluster jackknife, and
