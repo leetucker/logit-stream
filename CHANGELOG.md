@@ -14,6 +14,12 @@
   maximum. Several fixed effects, `bias_correction=True`, `bootcluster=`, CRV3 and
   `separation_check=False` still run hdfe-stream's engine and return its `HDFEResult`;
   `probit_stream` always does. `predict(type="class")` is new.
+- **Fixed effects with many small groups are 1.5-2 times faster** for the binary and the two-level
+  multinomial and ordered logit (10 million rows in 2 million units of 5: 7.1 s, now 4.2 s). The
+  within pseudo R-squared's null model of two levels is now its closed form (each group's share),
+  which took 2 s of Newton's method on 2 million groups, and the Schur step inverts a one-parameter
+  group's block as a reciprocal (1 s of batched matrix inverses). `logit_stream(..., bias_correction=False)`
+  and `bootcluster=None` are the defaults, not options only hdfe-stream's engine has.
 - **A cluster whose rows were all dropped is not counted** in a binary logit's cluster-robust
   variance (`G` and the degrees of freedom count the clusters of the rows used), and analytic
   weights are rescaled over the rows used after a fixed effect's separation drops some, as

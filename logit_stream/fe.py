@@ -341,7 +341,8 @@ class _AbsorbedFE:
         form); for the ordered logit a location per level and common
         cutpoints, fitted on the G x J table in memory."""
         n = self.wcnt[self.keep_g]
-        if self.model.kind == "mlogit":
+        if self.model.kind == "mlogit" or n.shape[1] == 2:
+            # (two levels: one location per group is its share, whatever the link)
             return float(np.sum(xlogy(n, n / n.sum(axis=1, keepdims=True))))
         return _ordered_table_loglik(n, self.model.link)
 
@@ -536,10 +537,14 @@ class _AbsorbedFE:
         if getattr(H, "red", None) is None:
             G, J = self.G, self.m
             P = H.tt.shape[0]
-            try:
-                Dinv = np.linalg.inv(H.aa)
-            except np.linalg.LinAlgError:
-                Dinv = np.linalg.pinv(H.aa, hermitian=True)
+            d1 = H.aa[:, 0, 0] if J == 1 else None
+            if d1 is not None and np.all(d1 != 0):
+                Dinv = (1.0 / d1)[:, None, None]              # one parameter per group
+            else:
+                try:
+                    Dinv = np.linalg.inv(H.aa)
+                except np.linalg.LinAlgError:
+                    Dinv = np.linalg.pinv(H.aa, hermitian=True)
             BD = Dinv @ H.ta                                  # G x J x P
             Bf = H.ta.reshape(G * J, P)
             red = H.tt - _tall_product(Bf, BD.reshape(G * J, P))

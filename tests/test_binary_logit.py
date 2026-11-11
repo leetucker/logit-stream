@@ -127,6 +127,9 @@ def test_routes_to_hdfe_stream_where_this_engine_cannot_fit(data, tmp_path):
     r = logit_stream("y ~ x1 | g", data, iwls_tol=1e-9, iwls_maxiter=30, save_resid=False,
                      within_pseudo_r2=True, fe_dof="pyfixest", **kw)
     assert isinstance(r, BinaryLogitResult)
+    # an option passed at its default is not given
+    assert isinstance(logit_stream("y ~ x1 | g", data, bias_correction=False, bootcluster=None,
+                                   **kw), BinaryLogitResult)
     with pytest.raises(Exception, match="CRV3"):
         logit_stream("y ~ x1", data, vcov={"CRV3": "c"}, **kw)
 

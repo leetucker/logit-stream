@@ -234,6 +234,9 @@ def _binary_route(vcov, cluster, options):
         opts.pop(k, None)
     if opts.pop("separation_check", True) is not True:
         return None
+    for off, default in (("bias_correction", False), ("bootcluster", None)):
+        if off in opts and opts[off] == default:        # switched off: as not given
+            del opts[off]
     if "iwls_tol" in opts:
         opts["tol"] = opts.pop("iwls_tol")
     if "iwls_maxiter" in opts:
