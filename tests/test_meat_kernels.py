@@ -106,3 +106,84 @@ def test_a_fixed_effect_or_a_wide_design_keeps_the_numpy_code(data, monkeypatch)
     monkeypatch.setattr(M, "ORD_KERNEL_MAX_K", 2)
     ologit_stream(f"yo ~ {RHS}", data, vcov="hetero", verbose=False)
     assert calls["n"] == 0
+
+
+# ------------------------------------------- the conditional and fixed-effects logit
+@pytest.fixture(scope="module")
+def choices():
+    from logit_stream.simulate import simulate_choices
+    rng = np.random.default_rng(5)
+    d = simulate_choices(3000, seed=4)
+    return d.with_columns(
+        cl=pl.col("case") % 120, cl2=pl.col("case") % 7, clmany=pl.col("case") % 2000,
+        w=(pl.col("case") % 4 + 1).cast(pl.Float64),
+        o=pl.Series(rng.normal(scale=0.2, size=d.height)))
+
+
+@pytest.fixture(scope="module")
+def panel():
+    rng = np.random.default_rng(6)
+    N, T = 2500, 4
+    i = np.repeat(np.arange(N), T)
+    a = rng.normal(size=N)[i]
+    x1 = rng.normal(size=N * T) + 0.5 * a
+    x2 = rng.normal(size=N * T)
+    y = (rng.random(N * T) < 1 / (1 + np.exp(-(0.8 * x1 - 0.5 * x2 + a)))).astype(int)
+    return pl.DataFrame({"y": y, "x1": x1, "x2": x2, "i": i, "cl": i % 120, "cl2": i % 7,
+                         "clmany": i % 2000, "w": (i % 4 + 1).astype(float),
+                         "o": rng.normal(scale=0.2, size=N * T)}).sample(
+        fraction=1.0, shuffle=True, seed=1)
+
+
+CFML = "chosen ~ cost + time + C(alt) + income:C(alt)"
+CASE_CASES = {
+    "clogit hetero": ("choices", lambda: __import__("logit_stream").clogit_stream, CFML,
+                      dict(case="case", vcov="hetero")),
+    "clogit CRV1": ("choices", lambda: __import__("logit_stream").clogit_stream, CFML,
+                    dict(case="case", vcov={"CRV1": "cl"})),
+    "clogit two-way, analytic weights": (
+        "choices", lambda: __import__("logit_stream").clogit_stream, CFML,
+        dict(case="case", vcov={"CRV1": "cl+cl2"}, weights="w")),
+    "clogit frequency weights, offset": (
+        "choices", lambda: __import__("logit_stream").clogit_stream, CFML,
+        dict(case="case", vcov="hetero", weights="w", weights_type="fweights", offset="o")),
+    "clogit many clusters": ("choices", lambda: __import__("logit_stream").clogit_stream, CFML,
+                             dict(case="case", vcov={"CRV1": "clmany"})),
+    "cfelogit hetero": ("panel", lambda: __import__("logit_stream").cfelogit_stream,
+                        "y ~ x1 + x2 | i", dict(vcov="hetero")),
+    "cfelogit CRV1": ("panel", lambda: __import__("logit_stream").cfelogit_stream,
+                      "y ~ x1 + x2 | i", dict(vcov={"CRV1": "cl"})),
+    "cfelogit two-way, analytic weights": (
+        "panel", lambda: __import__("logit_stream").cfelogit_stream, "y ~ x1 + x2 | i",
+        dict(vcov={"CRV1": "cl+cl2"}, weights="w")),
+    "cfelogit frequency weights, offset": (
+        "panel", lambda: __import__("logit_stream").cfelogit_stream, "y ~ x1 + x2 | i",
+        dict(vcov="hetero", weights="w", weights_type="fweights", offset="o")),
+    "cfelogit many clusters": ("panel", lambda: __import__("logit_stream").cfelogit_stream,
+                               "y ~ x1 + x2 | i", dict(vcov={"CRV1": "clmany"})),
+}
+
+
+@pytest.mark.parametrize("owner", [False, True], ids=["copies per part", "owned clusters"])
+@pytest.mark.parametrize("name", list(CASE_CASES))
+def test_sets_and_units_variance_equals_the_numpy_code(request, monkeypatch, name, owner):
+    which, getfn, fml, kw = CASE_CASES[name]
+    df, fn = request.getfixturevalue(which), getfn()
+    calls = {"n": 0}
+    add = MK.CasesMeat.add
+
+    def spy(self, blk):
+        calls["n"] += 1
+        return add(self, blk)
+    monkeypatch.setattr(MK.CasesMeat, "add", spy)
+    if owner:
+        monkeypatch.setattr(MK, "MEAT_CLUSTER_MB", 1e-6)
+    kw = dict(verbose=False, tol=1e-13, **kw)
+    fast = fn(fml, df, **kw)
+    assert calls["n"] >= 1
+    calls["n"] = 0
+    monkeypatch.setattr(M, "MNL_KERNEL_MIN_ROWS", 10**9)
+    ref = fn(fml, df, **kw)
+    assert calls["n"] == 0
+    np.testing.assert_allclose(fast.beta, ref.beta, rtol=1e-9, atol=1e-10)
+    np.testing.assert_allclose(fast.vcov, ref.vcov, rtol=1e-8, atol=1e-14)

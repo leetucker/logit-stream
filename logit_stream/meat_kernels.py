@@ -1,5 +1,7 @@
 """Fused numba passes for the robust and clustered variances of the
-multinomial and ordered logit (without an absorbed fixed effect).
+multinomial and ordered logit (without an absorbed fixed effect) and of the
+conditional and fixed-effects logit (whose rows of the sums are choice sets or
+units).
 
 `_Driver.meat` reads the rows once more to form the sandwich's middle
 matrices: sum w' s s' over the rows ("hetero"), and for each clustering the
@@ -246,6 +248,146 @@ def _ord_cluster_pass(X, theta, colmap, cuts, y, w, off, has_w, probit, code, bo
                 U[c, K + yi - 1] += wi * gb
 
 
+@nb.njit(cache=True, inline="always", error_model="numpy")
+def _clogit_set_score(X, colmap, theta, off, y, a, b, eta, sv):
+    """The score of the choice set in rows ``a:b`` into `sv`: sum_r (y_r - p_r)
+    x_r with p the set's softmax of the linear predictors (`eta` is a buffer
+    for them)."""
+    K = len(colmap)
+    m = -np.inf
+    for r in range(a, b):
+        e = off[r] if len(off) > 0 else 0.0
+        for k in range(K):
+            e += X[r, colmap[k]] * theta[k]
+        eta[r - a] = e
+        if e > m:
+            m = e
+    S = 0.0
+    for r in range(a, b):
+        eta[r - a] = np.exp(eta[r - a] - m)
+        S += eta[r - a]
+    for k in range(K):
+        sv[k] = 0.0
+    for r in range(a, b):
+        d = (1.0 if y[r] == 1 else 0.0) - eta[r - a] / S
+        for k in range(K):
+            sv[k] += d * X[r, colmap[k]]
+
+
+@nb.njit(cache=True, error_model="numpy")
+def _cfe_unit_score(X, colmap, theta, off, y, r0, r1, sv):
+    """The score of the unit in rows ``r0:r1`` of the conditional fixed-effects
+    logit into `sv` (unweighted): sum y x - E[sum d x | k], from the recursion
+    over subsets of `models._cfe_units` (gradient only); zero for a unit
+    with no variation."""
+    K = len(colmap)
+    T = r1 - r0
+    for k in range(K):
+        sv[k] = 0.0
+    kk = 0
+    for r in range(r0, r1):
+        kk += 1 if y[r] > 0 else 0
+    if kk == 0 or kk == T:
+        return
+    s = 1.0
+    if 2 * kk > T:
+        s, kk = -1.0, T - kk
+    eta = np.empty(T)
+    c = -np.inf
+    for r in range(r0, r1):
+        e = off[r] if len(off) > 0 else 0.0
+        for k in range(K):
+            e += X[r, colmap[k]] * theta[k]
+        eta[r - r0] = e
+        c = max(c, s * e)
+    ee = np.zeros(kk + 1)
+    G = np.zeros((kk + 1, K))
+    ee[0] = 1.0
+    for r in range(r0, r1):
+        z = np.exp(s * eta[r - r0] - c)
+        yr = (y[r] > 0) if s > 0 else (y[r] <= 0)
+        if yr:
+            for k in range(K):
+                sv[k] += s * X[r, colmap[k]]
+        for j in range(kk, 0, -1):
+            for k in range(K):
+                G[j, k] += z * (G[j - 1, k] + s * X[r, colmap[k]] * ee[j - 1])
+            ee[j] += z * ee[j - 1]
+    for k in range(K):
+        sv[k] -= G[kk, k] / ee[kk]
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _cases_meat_pass(X, theta, colmap, y, w, off, starts, wmode, cl, cloff, hetero, fe_unit,
+                     run, max_size, M_t, U_t):
+    """The conditional logit's (``fe_unit`` false) or the fixed-effects logit's
+    sets' scores (one per set or unit, by `_clogit_set_score` or
+    `_cfe_unit_score`): their outer products into ``M_t[t]`` (upper
+    triangle, weighted by m: 1, w or w^2 for `wmode` 0, 2, 1, w the set's
+    first row's) and their clusters' sums into ``U_t[t]`` (weighted by w; the
+    clusters are those of the set's first row). The sets are dealt to the
+    parts in runs of `run`, every part-th run."""
+    n_sets = len(starts) - 1
+    K = len(colmap)
+    ncl = cl.shape[1]
+    n_parts = M_t.shape[0]
+    has_w = wmode > 0
+    for t in nb.prange(n_parts):
+        sv = np.empty(K)
+        eta = np.empty(max_size)
+        M = np.zeros((K, K) if hetero else (0, 0))
+        for s0 in range(t * run, n_sets, n_parts * run):
+            for s in range(s0, min(n_sets, s0 + run)):
+                a = starts[s]
+                b = starts[s + 1]
+                if fe_unit:
+                    _cfe_unit_score(X, colmap, theta, off, y, a, b, sv)
+                else:
+                    _clogit_set_score(X, colmap, theta, off, y, a, b, eta, sv)
+                wi = w[a] if has_w else 1.0
+                for k in range(ncl):
+                    row = cloff[k] + cl[a, k]
+                    for p in range(K):
+                        U_t[t, row, p] += wi * sv[p]
+                if hetero:
+                    mw = 1.0 if wmode == 0 else (wi * wi if wmode == 1 else wi)
+                    for p in range(K):
+                        x = mw * sv[p]
+                        for q in range(p, K):
+                            M[p, q] += x * sv[q]
+        if hetero:
+            M_t[t] = M
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _cases_cluster_pass(X, theta, colmap, y, w, off, starts, has_w, fe_unit, code, bounds,
+                        max_size, U):
+    """The sets' clusters' sums of scores for one clustering, for many clusters
+    (`_mnl_cluster_pass`): part t owns the cluster codes ``bounds[t]`` to
+    ``bounds[t + 1]``; `code` is each set's."""
+    n_sets = len(starts) - 1
+    K = len(colmap)
+    n_parts = len(bounds) - 1
+    for t in nb.prange(n_parts):
+        lo = bounds[t]
+        hi = bounds[t + 1]
+        sv = np.empty(K)
+        eta = np.empty(max_size)
+        for s in range(n_sets):
+            c = code[s]
+            if c < lo or c >= hi:
+                continue
+            a = starts[s]
+            b = starts[s + 1]
+            if fe_unit:
+                _cfe_unit_score(X, colmap, theta, off, y, a, b, sv)
+            else:
+                _clogit_set_score(X, colmap, theta, off, y, a, b, eta, sv)
+            wi = w[a] if has_w else 1.0
+            for p in range(K):
+                U[c, p] += wi * sv[p]
+
+
 class _MeatPass:
     """Block by block through the kernel: `add` each block, then `result`."""
 
@@ -408,6 +550,58 @@ class OrderedMeat(_MeatPass):
         return True
 
 
+class CasesMeat(_MeatPass):
+    """The conditional logit's and the fixed-effects logit's: a set (unit) is a
+    row of the variance's sums."""
+
+    def __init__(self, driver, theta, weights_type, clusters, hetero):
+        super().__init__(driver, theta, weights_type, clusters, hetero)
+        self.fe_unit = driver.model.kind == "cfelogit"
+        self.Mt = np.zeros((self.P, self.P)) if hetero else None
+
+    @property
+    def M(self):
+        return np.triu(self.Mt) + np.triu(self.Mt, 1).T
+
+    def add(self, blk):
+        starts = np.ascontiguousarray(blk["starts"], np.int64)
+        n_sets = len(starts) - 1
+        P = self.P
+        combined = self.combined and self.sumG * 8 <= n_sets
+        n_parts = _parts(max(1, n_sets), P)
+        if combined and self.sumG:
+            n_parts = min(n_parts, max(1, int(MEAT_CLUSTER_MB * 1e6 // (self.sumG * P * 8))))
+        X = np.ascontiguousarray(blk["X"])
+        cols = np.asarray(self.m.cols, np.int64)
+        w, off = blk.get("w"), blk.get("off")
+        empty = np.empty(0)
+        wv = empty if w is None else np.ascontiguousarray(w, np.float64)
+        ov = empty if off is None else np.ascontiguousarray(off, np.float64)
+        wmode = self.wmode if w is not None else 0
+        cl = self._clusters_of(blk, len(blk["y"]))
+        max_size = int(np.diff(starts).max()) if n_sets else 1
+        run = M_.CFE_RUN if self.fe_unit else max(1, -(-n_sets // n_parts))
+        hz = self.hetero
+        M_t = np.zeros((n_parts, P, P) if hz else (n_parts, 0, 0))
+        U_t = np.zeros((n_parts, self.sumG if combined else 0, P))
+        with nb.parallel_chunksize(1):
+            if hz or combined:
+                _cases_meat_pass(X, self.theta, cols, blk["y"], wv, ov, starts, wmode,
+                                 cl if combined else cl[:, :0], self.cloff, hz, self.fe_unit,
+                                 run, max_size, M_t, U_t)
+            if not combined:
+                for k in range(len(self.names)):
+                    code = np.ascontiguousarray(cl[starts[:-1], k])
+                    _cases_cluster_pass(X, self.theta, cols, blk["y"], wv, ov, starts,
+                                        w is not None, self.fe_unit, code, self.owner_bounds(k),
+                                        max_size, self.U[self.cloff[k]:self.cloff[k + 1]])
+        if hz:
+            self.Mt += M_t.sum(axis=0)
+        if combined:
+            self.U += U_t.sum(axis=0)
+        return True
+
+
 def make(driver, theta, weights_type, clusters, hetero):
     """The fused variance pass for `driver`'s model, or None when the NumPy code
     should run (a fixed effect, a device, a design the fused passes of the
@@ -423,6 +617,10 @@ def make(driver, theta, weights_type, clusters, hetero):
         if m.K == 0 or m.K > M_.ORD_KERNEL_MAX_K or m.fix_first:
             return None
         return OrderedMeat(driver, theta, weights_type, clusters, hetero)
+    if m.kind in ("clogit", "cfelogit"):
+        if m.K == 0 or m.K > M_.CLOGIT_KERNEL_MAX_P:
+            return None
+        return CasesMeat(driver, theta, weights_type, clusters, hetero)
     return None
 
 

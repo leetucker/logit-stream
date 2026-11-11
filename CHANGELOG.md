@@ -11,6 +11,12 @@
   the fixed effect is formed while its group's block is in cache (the rows are grouped): 500
   groups, `hetero` 0.8 s, now 0.16 s; 2,000 clusters 0.95 s, now 0.09 s, which takes the variance
   from 70-80% of such a fit to 4-16%. The variances are the same.
+- **Robust and clustered variances of the conditional logit and the fixed-effects logit
+  (`cfelogit_stream`) are 2.5-7 times faster.** The same kernel treats a choice set or a unit as
+  the row of the sums, forming its score in a thread (for the fixed-effects logit, by the same
+  recursion as the likelihood's). 1 million choice sets of 4 alternatives and 6 covariates:
+  `hetero` 0.33 s, now 0.08 s; 30 covariates 0.97 s for half the sets, now 0.15 s. The variances are
+  the same.
 - **The multinomial and ordered logit with an absorbed fixed effect are 2-4 times faster.** Each
   pass over the data is now a fused parallel kernel, 4-11 times faster per pass (1 million rows,
   500 groups: 0.8 s per pass for the multinomial logit, now 0.2 s; 0.6 s for the ordered logit,
