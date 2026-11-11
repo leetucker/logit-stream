@@ -254,3 +254,23 @@ def test_rows_that_cannot_be_sorted_inside_the_memory_limit_stay_unsorted(data, 
     ologit_stream(f"yo ~ {RHS} | g", data.sort("g"), verbose=False)
     assert seen["blocks"] > 0
 
+
+@pytest.mark.parametrize("name", ["mlogit", "ologit"])
+def test_weights_and_clusters_count_the_rows_used(data, name):
+    """The levels of g whose outcome never varies are dropped; the fit must
+    equal the one on the data without them (analytic weights average 1, and
+    clusters are counted, over the rows used)."""
+    fn, fml, kw = CASES[name]
+    kw = {k: v for k, v in kw.items() if k not in ("weights", "offset")}
+    kept = data.filter(~pl.col("g").is_in([0, 1, 2]))
+    for extra in ({"weights": "w"}, {"vcov": {"CRV1": "g"}},
+                  {"weights": "w", "vcov": {"CRV1": "g"}}):
+        a = fn(fml, data, verbose=False, **kw, **extra)
+        b = fn(fml, kept, verbose=False, **kw, **extra)
+        assert np.allclose(a.beta, b.beta, rtol=0, atol=1e-8)
+        assert a.n_obs == b.n_obs
+        for k in b.all_vcovs:
+            assert np.allclose(a.all_vcovs[k][0], b.all_vcovs[k][0], rtol=1e-6, atol=1e-10), k
+            assert a.all_vcovs[k][1] == b.all_vcovs[k][1], k
+        for stat in ("loglik", "loglik_null", "aic", "bic"):
+            assert np.isclose(getattr(a, stat), getattr(b, stat), rtol=1e-8), stat

@@ -456,8 +456,10 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         # analytic weights are scaled to a mean of one over the rows read, before
         # a fixed effect's separation drops some: the binary logit rescales them
         # over the rows used, as hdfe-stream does (it matters to the iid vcov and
-        # the log-likelihood, not to the robust variances)
-        wfix = (p0.n_obs / p0.wsum if binary and weights and weights_type != "fweights"
+        # the log-likelihood, not to the robust variances); so do the multinomial
+        # and ordered logit
+        wfix = (p0.n_obs / p0.wsum if (binary or kind in ("mlogit", "ologit"))
+                and random is None and weights and weights_type != "fweights"
                 and p0.wsum > 0 else 1.0)
         all_vcovs = {"iid": (Vi / wfix, int(N - P))}
         n_clusters = {}
@@ -466,7 +468,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             cl_index = {k: (i, int(p0.cluster_tables[k].height))
                         for i, k in enumerate(clusters)}
             M, U = driver.meat(fit.theta, fit.H, weights_type, cl_index, hetero)
-            if binary:
+            if kind in ("mlogit", "ologit"):
                 # a cluster whose rows were all dropped (a fixed effect's separation)
                 # is not one: G counts the clusters of the rows used
                 cl_index = {k: (i, int(np.count_nonzero(np.any(U[k] != 0, axis=1))))

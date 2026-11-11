@@ -20,10 +20,13 @@
   which took 2 s of Newton's method on 2 million groups, and the Schur step inverts a one-parameter
   group's block as a reciprocal (1 s of batched matrix inverses). `logit_stream(..., bias_correction=False)`
   and `bootcluster=None` are the defaults, not options only hdfe-stream's engine has.
-- **A cluster whose rows were all dropped is not counted** in a binary logit's cluster-robust
-  variance (`G` and the degrees of freedom count the clusters of the rows used), and analytic
+- **A cluster whose rows were all dropped is not counted** in a binary, multinomial or ordered
+  logit's cluster-robust variance (`G` and the degrees of freedom count the clusters of the rows used), and analytic
   weights are rescaled over the rows used after a fixed effect's separation drops some, as
-  hdfe-stream does.
+  hdfe-stream does (before, the multinomial and ordered logit counted such clusters, so their
+  clustered variances were slightly small, and scaled the weights over all rows read, which
+  changed the iid variance and the log-likelihoods). A fit equals the one on the data without the
+  dropped groups.
 - **A fixed effect's sort of the rows respects `max_memory_gb`.** Rows not already grouped by the
   fixed effect are partitioned in memory to sort them; when that would not fit, they stay in their
   order and the passes are slower.
