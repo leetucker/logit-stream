@@ -129,20 +129,30 @@ _RANDOM = """
         `l2`. `vcov` may be ``"iid"`` or clustered by a variable that
         contains whole groups of the coarsest random grouping (crossed
         groupings allow none; not ``"hetero"``). The coefficients' standard
-        errors include Sigma's uncertainty. The predicted effects are in
+        errors include Sigma's uncertainty. The predicted effects (conditional
+        modes) and their conditional sds are in
         `ranef`, and `predict` uses them (0 for a group the fit did not
         see); Sigma, its standard errors and the sds' and correlations' (with
         intervals on the log and Fisher-z scales) are in `random_effects`
         and `varcorr`. A variance estimated at zero is held at a floor (an
         sd of 0.001), with a warning. See `logit_stream.random_effects` for
         the method.
-    random_method : {"laplace", "joint-mode"}, default "laplace"
+    random_method : {"laplace", "joint-mode", "adaptive"}, default "laplace"
         The approximation to the likelihood: Laplace's (lme4's ``nAGQ = 1``,
         ordinal's ``clmm`` default), or Laplace's with the coefficients and
         the effects at their joint mode (lme4's ``nAGQ = 0``), which is
         faster and close to it when groups have many rows each (with ~100
         rows per group, the coefficients can be a few tenths of a standard
-        error away).
+        error away), or adaptive Gauss-Hermite quadrature (lme4's
+        ``nAGQ > 1``): the maximum likelihood to the quadrature's accuracy,
+        for one random grouping with a scalar intercept (`logit_stream`,
+        `ologit_stream`), iid variance only. Laplace's approximation
+        underestimates the variance when groups have few rows (by about a
+        fifth with 3 rows a group of a binary outcome); "adaptive" does not.
+        See `logit_stream.random_effects.adaptive`.
+    random_nodes : int, default 9
+        The quadrature's points per group with ``random_method="adaptive"``
+        (at least 5).
     random_cov : {"unstructured", "diagonal"}, default "unstructured"
         The form of Sigma (multinomial; the ordered logit's is 1 x 1).
     random_tol : float, default 1e-6
@@ -198,6 +208,13 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
     A two-level `mlogit_stream` fits the same model, with this package's
     conventions for the variance; it is also the way to Firth's penalized
     likelihood for a binary outcome (``firth=True``).
+
+    ``random=`` (random intercepts, with ``random_method``, ``random_nodes``
+    and ``random_tol`` as for `mlogit_stream`) is fitted by this package's
+    engine, as the two-level ordered logit, with lme4's conventions for the
+    variance (no small-sample factor); ``random_method="adaptive"`` is
+    adaptive quadrature, which small groups need (see
+    `logit_stream.random_effects.adaptive`).
     """
     return _binary_fit("logit", fml, data, workdir, vcov, cluster, options)
 
@@ -206,6 +223,16 @@ def _binary_fit(family, fml, data, workdir, vcov, cluster, options):
     """A binary logit or probit: this package's fit where it can, else
     hdfe-stream's `feglm_stream`."""
     route = _binary_route(vcov, cluster, options)
+    if options.get("random") is not None:
+        # random intercepts are this package's fit only (hdfe-stream has none)
+        if route is None:
+            raise ValueError(
+                f"{family}_stream: random= is fitted by this package's engine, which does not "
+                "have every option given (bias_correction=, bootcluster=, CRV3, the "
+                "separation check switched off, ...); drop them to fit random intercepts")
+        from .estimator import _fit
+        return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
+                    _binary=True, link=family, **route)
     if route is not None:
         from .estimator import _fit, _NeedsHdfe
         try:
@@ -233,8 +260,8 @@ def _binary_route(vcov, cluster, options):
 
     from .estimator import _fit
     known = set(inspect.signature(_fit).parameters) - {
-        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2", "random",
-        "random_cov", "random_tol", "random_method", "firth", "device", "link", "altwise",
+        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2",
+        "firth", "device", "link", "altwise",
         "poisson_options", "profile", "own_covariates", "_binary"}
     opts = dict(options)
     for k in _BINARY_IGNORED:

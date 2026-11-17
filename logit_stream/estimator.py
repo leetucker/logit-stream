@@ -31,7 +31,15 @@ from ._frontend import _plan
 from ._limits import limited
 from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
 from .newton import _Driver
-from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
+from .random_effects import (
+    ADAPTIVE_NODES,
+    MIN_NODES,
+    _fit_adaptive,
+    _fit_random,
+    _RandomEffects,
+    _refine_laplace,
+    _sigma_inference,
+)
 from .results import (
     BinaryLogitResult,
     BinaryProbitResult,
@@ -80,18 +88,22 @@ def _nested_in_cluster(p0, fe, col):
     return bool(np.all(lo[seen] == hi[seen]))
 
 
-def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req):
+def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req, scale=True):
     """The binary logit's report from the two-level ordered fit's: the
     variances scaled as hdfe-stream's and pyfixest's are, K = P + k_fe
     (iid (N - 1) / (N - K), hetero N / (N - K), clustered times
     (N - 1) / (N - Kc), Kc counting the fixed effect only if it is not nested
     in the request's clusters), and the cutpoint as the intercept (minus it,
-    first)."""
+    first). Without `scale` (random intercepts: maximum-likelihood
+    variances, as lme4's), the variances are not scaled."""
     K = P + k_fe
     fac = {"iid": _ratio(N - 1, N - K), "hetero": _ratio(N - 1, N - K)}
     out = {}
     for key, (V, df) in all_vcovs.items():
-        if key in fac:
+        if not scale:
+            fac[key] = 1.0
+            out[key] = (V, df)
+        elif key in fac:
             out[key] = (V * fac[key], int(N - K))
         else:
             Kc = P + (1 if nested_by_req.get(key) else k_fe)
@@ -163,7 +175,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          block_mb: float = 64.0, chunk_mb: float = 64.0, polars_engine: str = "cpu",
          keep_intermediates: bool = False, verbose: bool = True, logger=None,
          log_level=None, random: str | None = None, random_cov: str = "unstructured",
-         random_tol: float = 1e-6, random_method: str = "laplace", firth: bool = False,
+         random_tol: float = 1e-6, random_method: str = "laplace",
+         random_nodes: int = ADAPTIVE_NODES, firth: bool = False,
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
@@ -232,8 +245,26 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                              "distinct ones")
         if random_cov not in ("unstructured", "diagonal"):
             raise ValueError("random_cov must be 'unstructured' or 'diagonal'")
-        if random_method not in ("laplace", "joint-mode"):
-            raise ValueError("random_method must be 'laplace' or 'joint-mode'")
+        if random_method not in ("laplace", "joint-mode", "adaptive"):
+            raise ValueError("random_method must be 'laplace', 'joint-mode' or 'adaptive'")
+        if random_method == "adaptive":
+            if kind != "ologit":
+                raise ValueError("random_method='adaptive' (adaptive quadrature, one scalar "
+                                 "random intercept) is for logit_stream and ologit_stream; for "
+                                 "a binary outcome use logit_stream, not a two-level "
+                                 "mlogit_stream")
+            if len(random) != 1:
+                raise ValueError("random_method='adaptive' takes one random grouping")
+            if device not in (None, "cpu"):
+                raise ValueError("random_method='adaptive' runs on the CPU (device='cpu')")
+            if profile:
+                raise ValueError("profile= is not available with random_method='adaptive'")
+            if (isinstance(random_nodes, bool) or not isinstance(random_nodes, (int, np.integer))
+                    or random_nodes < MIN_NODES):
+                raise ValueError(f"random_nodes must be an integer of at least {MIN_NODES} (with "
+                                 "fewer, the nodes held during each Newton step bias the "
+                                 "fit; for Laplace's approximation use "
+                                 "random_method='laplace')")
         if l2:
             raise ValueError("l2= and random= cannot be combined")
     vkey, clusters, hetero, requests = _clusterings(vcov, cluster)
@@ -334,6 +365,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 keep_intermediates=keep_intermediates, log=log,
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
+                                random_nodes=random_nodes,
                                 firth=firth, offset=offset, start=start, device=device,
                                 link=link, altwise=altwise, budget=budget,
                                 own_covariates=own_covariates, binary=_binary))
@@ -346,7 +378,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
 def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weights, weights_type,
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
-             random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
+             random_tol=1e-6, random_method="laplace", random_nodes=ADAPTIVE_NODES,
+             firth=False, offset=None, start=None,
              device=None, link="logit", altwise=False, budget=None, own_covariates=None,
              binary=False):
     t0 = time.time()
@@ -357,12 +390,18 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         p0 = _build(lf, spec, kind, run.path, engine, weights=weights,
                     clusters=clusters, case=case, levels=levels,
                     in_memory=(storage == "memory"),
-                    sort_fe=(SORT_FE and kind in ("mlogit", "ologit") and random is None
+                    sort_fe=(random[0] if random is not None and random_method == "adaptive"
+                             else SORT_FE and kind in ("mlogit", "ologit") and random is None
                              and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
                     altwise=altwise, budget=budget)
         disk_peak = p0.store.bytes if storage == "disk" else 0
+        if random is not None and random_method == "adaptive" and not p0.fe_sorted:
+            raise ValueError(
+                f"{spec.fml}: random_method='adaptive' needs each group's rows in one block of "
+                "the store, and they could not be grouped (a group larger than a block, or too "
+                "little memory to sort them; see the log): raise block_mb or max_memory_gb")
         if binary:
             try:
                 ok = [float(v) for v in p0.levels] == [0.0, 1.0]
@@ -418,7 +457,11 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         if random is not None:
             # the joint-mode fit only starts the exact approximation's, which
             # carries Sigma on to random_tol
-            tol_a = max(random_tol, 1e-5) if random_method == "laplace" else random_tol
+            tol_a = (max(random_tol, 1e-5) if random_method == "laplace"
+                     else max(random_tol, 1e-4) if random_method == "adaptive" else random_tol)
+            if random_method == "adaptive" and (clusters or hetero):
+                raise ValueError(f"{spec.fml}: random_method='adaptive' has the iid variance "
+                                 "only (no clustered or heteroskedasticity-robust one yet)")
             fit, re_info = _fit_random(driver, fe, theta0, spec.fml, tol_a, log, logger)
             if random_method == "laplace":
                 fit, info = _refine_laplace(driver, fe, fit, spec.fml, tol, random_tol, log,
@@ -428,7 +471,11 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                 re_info["passes"] += info["laplace_passes"]
                 re_info["newton_steps"] += info["laplace_steps"]
                 re_info["seconds"] = round(re_info["seconds"] + info["laplace_seconds"], 3)
-            re_info["sigma"] = _sigma_inference(driver, fe, fit)
+            if random_method == "adaptive":
+                fit, re_info = _fit_adaptive(driver, fe, fit, re_info, spec.fml, tol,
+                                             random_nodes, log, logger)
+            else:
+                re_info["sigma"] = _sigma_inference(driver, fe, fit)
             sing = fe.singular()
             re_info["singular"] = sing
             if sing:
@@ -565,7 +612,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                             nested_terms[one] = _nested_in_cluster(p0, fe, cl_index[one][0])
                     nested_by_req[req] = any(nested_terms[one] for one, _, _ in parts)
             names, beta, all_vcovs, vfac = _binary_report(names, beta, all_vcovs, N, P, k_fe,
-                                                          nested_by_req)
+                                                          nested_by_req,
+                                                          scale=random is None)
             V, df_t = all_vcovs[vkey]
             diagnostics["irls"] = {"iterations": fit.iterations, "converged": fit.converged,
                                    "decrement": fit.decrement, "tol": tol,
@@ -593,6 +641,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       random_effects=({} if random is None else {
                           f.name: {"group": f.name, "n_groups": int(f.n_eff), "Sigma": f.S.copy(),
                                    "cov": random_cov, "method": random_method,
+                                   "nodes": (int(random_nodes) if random_method == "adaptive"
+                                             else 1 if random_method == "laplace" else 0),
                                    "within": outer, "structure": fe.kind,
                                    "levels": (list(p0.levels[1:]) if kind == "mlogit"
                                               else ["location"]),
@@ -613,7 +663,9 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                                          _spec=rspec)
         elif kind == "ologit":
             if binary:
-                common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None else {})
+                if random is None:
+                    common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None
+                                          else {})
                 cls = BinaryProbitResult if link == "probit" else BinaryLogitResult
                 res = cls(**common, levels=list(p0.levels), family=link,
                                         deviance=float(-2 * ll), k_fe=int(k_fe), _spec=rspec)

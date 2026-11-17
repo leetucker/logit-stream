@@ -198,7 +198,10 @@ class LogitResult(RegressionResult):
         """A random grouping's predicted intercepts (their modes given the
         data, the conditional means' Laplace approximation): one row per
         group, with one column per outcome level (the base level's 0) for
-        the multinomial logit, one for the ordered logit, and the group's
+        the multinomial logit, one for the ordered logit, then each
+        effect's conditional standard deviation (``sd_<grouping>``, or
+        ``sd_<grouping>:<level>``, 0 for the base level; lme4's ``condVar``:
+        given the coefficients, any fixed effect and Sigma), and the group's
         number of observations. `predict` adds every grouping's to the
         linear predictor, using 0 for a group the fit did not see. `name`:
         the grouping, needed when there are several."""
@@ -301,8 +304,9 @@ class LogitResult(RegressionResult):
         if self.random_effects:
             first = next(iter(self.random_effects.values()))
             how = {"laplace": "Laplace approximation",
-                   "joint-mode": "Laplace approximation at the joint mode"}.get(
-                       first.get("method"), "Laplace approximation")
+                   "joint-mode": "Laplace approximation at the joint mode",
+                   "adaptive": f"adaptive Gauss-Hermite quadrature, {first.get('nodes')} "
+                               "nodes"}.get(first.get("method"), "Laplace approximation")
             names = list(self.random_effects)
             struct = ("" if len(names) == 1 else
                       " (nested: " + " in ".join(names) + ")" if first["structure"] == "tree"
@@ -800,7 +804,12 @@ class BinaryLogitResult(OrderedLogitResult):
                 eta = eta + df["__ls_off"].to_numpy().astype(float)
             cols = {"xb": xb, "eta": eta}
             if fname:
-                cols[fname] = A[:, 0]
+                # the fixed effect's own column (A also holds any random effects)
+                at = 0
+                for _, values, kind in self._spec["effects"]:
+                    if kind == "fixed":
+                        cols[fname] = df[df.columns[k + at]].to_numpy().astype(np.float64)
+                    at += len(values)
             return pl.DataFrame(cols).fill_nan(None).to_struct(s.name)
 
         inputs = [ex.alias(f"__ls_p{j}") for j, (_, ex) in enumerate(xs)] + \

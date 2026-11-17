@@ -1,4 +1,4 @@
-"""Random intercepts for the multinomial and ordered logit (experimental): one
+"""Random intercepts for the multinomial, ordered and binary logit (experimental): one
 grouping, several nested ones (random state intercepts with random PUMA
 intercepts within), optionally inside an absorbed fixed effect they all nest
 in, or two crossed ones (random PUMA and random occupation intercepts).
@@ -74,11 +74,15 @@ Layout
     sigma.py    Sigma's updates and variance (a mixin of `_RandomEffects`)
     fit.py      the rounds (joint mode, then the exact Laplace refinement),
                 and Sigma's standard errors
+    adaptive.py adaptive Gauss-Hermite quadrature for one scalar random
+                intercept (``random_method="adaptive"``), from the joint mode
 """
 
+from .adaptive import ADAPTIVE_NODES, MIN_NODES, _fit_adaptive
 from .fit import GAIN_TOL, SIGMA_STEP, _fit_random, _refine_laplace, _sigma_inference
 from .model import DENSE_MAX, _RandomEffects
 from .sigma import VAR_FLOOR
 
-__all__ = ["DENSE_MAX", "GAIN_TOL", "SIGMA_STEP", "VAR_FLOOR", "_RandomEffects", "_fit_random",
-           "_refine_laplace", "_sigma_inference"]
+__all__ = ["ADAPTIVE_NODES", "DENSE_MAX", "GAIN_TOL", "MIN_NODES", "SIGMA_STEP", "VAR_FLOOR",
+           "_RandomEffects", "_fit_adaptive", "_fit_random", "_refine_laplace",
+           "_sigma_inference"]

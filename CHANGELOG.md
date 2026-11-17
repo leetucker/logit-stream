@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+New
+- **`random_method="adaptive"`: adaptive Gauss-Hermite quadrature for one scalar random
+  intercept** (`logit_stream` and `ologit_stream`, optionally within an absorbed fixed effect),
+  with `random_nodes` points per group (default 9, at least 5), centred at each group's
+  conditional mode, as lme4's `nAGQ > 1`. It removes the Laplace approximation's bias with small
+  groups. In a simulation with about 3 rows per group and variance 0.64, Laplace's estimate was
+  0.494 and adaptive quadrature's 0.644. It agrees with brute-force maximum likelihood to 1e-6
+  standard errors in the tests, and in the simulations was faster than the Laplace fit. Only
+  the iid variance is available with it, on the CPU.
+- **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
+  engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
+  variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.
+- **`ranef()` has each group's conditional sd** (`sd_<grouping>`, or `sd_<grouping>:<level>` for
+  the multinomial logit): lme4's `condVar`, at the estimates.
+
+Documentation
+- The random-intercepts page has a section on Laplace's small-group bias and the adaptive
+  quadrature.
+
 ## 0.4.0
 
 New

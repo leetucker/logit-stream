@@ -37,7 +37,7 @@ zero. The same, as a table with 95% intervals, and $\Sigma$ itself:
 ```python
 re.varcorr()
 re.random_effects["puma"]["Sigma"]       # and "Sigma_se", its elements' standard errors
-re.ranef("puma").collect()               # each PUMA's predicted effects
+re.ranef("puma").collect()               # each PUMA's predicted effects and their sds
 ```
 
 ```text
@@ -182,6 +182,92 @@ educ.varcorr()
 └───────┴──────────────┴──────────┴───────────┴──────────┴──────────┘
 ```
 
+## Small groups: adaptive quadrature
+
+**Laplace's approximation is biased when groups are small.** It replaces
+each group's integral over its effect by a normal curve around the mode,
+and with a binary or ordinal outcome and only a few rows per group the
+integrand is far from normal. The variance is then underestimated, and
+by more than its standard error. The bias is a property of the
+approximation, not of this package: lme4's and `clmm`'s Laplace fits
+share it. On simulated binary data -- 30,000 firms within 50 cells
+(absorbed, `y ~ 1 | cell`), firm effects with variance 0.64, one
+simulation each:
+
+| rows per firm (mean) | Laplace | adaptive, 9 nodes | its standard error |
+|---|---|---|---|
+| 3.0 | 0.494 (-23%) | 0.644 | 0.025 |
+| 4.3 | 0.569 (-11%) | 0.664 | 0.019 |
+| 11 | 0.611 (-5%) | 0.643 | 0.011 |
+
+With about 80 rows per group the two agree to a few hundredths of a
+standard error (the 60-group data of the test suite's lme4 comparison).
+The coefficients are biased less than the variance, toward zero: with 8
+covariates added to the same simulation, Laplace's slopes were about 2%
+smaller than the maximum-likelihood ones at 3 rows per firm (up to one
+standard error) and 0.1% at 11.
+
+`random_method="adaptive"` integrates each group's effect by adaptive
+Gauss-Hermite quadrature: `random_nodes` points (default 9) centred at the
+group's conditional mode and scaled by its conditional sd, as lme4's
+`nAGQ > 1` does. It is the maximum-likelihood fit to the quadrature's
+accuracy (the tests check it against brute-force integration). It is
+available for **one random grouping with a scalar intercept**: the binary
+logit (`logit_stream`) and the ordered logit, optionally within an absorbed
+fixed effect that the groups nest in:
+
+```python
+for method in ["laplace", "adaptive"]:
+    sm = logit_stream("y ~ 1 | cell", firms, random="firm", random_method=method)
+```
+
+```text
+laplace : variance 0.461 (sd 0.679, se 0.013); 11.4 s
+adaptive: variance 0.615 (sd 0.784, se 0.016); 5.0 s
+```
+
+(The simulation's variance is 0.64.) It starts from the joint-mode fit and
+takes full Newton steps in the coefficients, the fixed effect and the log
+sd, with each group's nodes held during a step and moved between steps.
+Each step is one read of the data, at about nine times a Laplace read's
+work; in the simulations above it was nonetheless faster than the Laplace
+fit, whose updates of $\Sigma$ slow down with small groups (with the 8
+covariates: 5.1 s against 13.3 s at 3 rows per firm, 8.8 s against 14.5 s
+at 11). To give a
+group's rows together, the first pass writes them grouped by the random
+grouping, as it does for an absorbed fixed effect (a group must fit in a
+block; `block_mb` raises the size). Restrictions, for now: the iid variance
+only (no clustered one), the CPU only, and at least 5 nodes (with fewer,
+holding the nodes during a step biases the fit; one node is not Laplace's
+fit here, which `random_method="laplace"` gives). Nine nodes are within
+1e-5 of the 25-node log-likelihood with groups of about 3 rows; raise
+`random_nodes` if the estimates move when you do. For a binary outcome use
+`logit_stream`, not a two-level `mlogit_stream`.
+
+**Conditional sds.** `ranef()` gives each group's effect (its conditional
+mode) and, in `sd_<grouping>` (`sd_<grouping>:<level>` for the multinomial
+logit, 0 for the base level), its conditional standard deviation: the
+square root of the inverse curvature of the group's log posterior at the
+mode, given the coefficients, the fixed effect and $\Sigma$ (lme4's
+`condVar`). With few rows a group's sd is close to the prior's,
+$\sqrt{\Sigma}$:
+
+```text
+┌──────┬───────────┬──────────┬───────┐
+│ firm ┆ re_firm   ┆ sd_firm  ┆ n_obs │
+╞══════╪═══════════╪══════════╪═══════╡
+│ 0    ┆ -0.32618  ┆ 0.704382 ┆ 2     │
+│ 1    ┆ -0.059486 ┆ 0.68662  ┆ 2     │
+│ 4    ┆ 0.038911  ┆ 0.686187 ┆ 2     │
+└──────┴───────────┴──────────┴───────┘
+```
+
+A normal with that mean and sd is the group effect's approximate posterior,
+e.g. for drawing a group's effect in multiple imputation. With very few
+rows, or rows all in one outcome level, the posterior is skewed and the
+normal is only approximate. The mode and sd do not include the
+coefficients' or $\Sigma$'s uncertainty.
+
 ## How it is fitted
 
 The likelihood integrates the group effects out. It is approximated by
@@ -193,7 +279,8 @@ their values for the same data); with two, nested or crossed, the
 coefficients are within 0.0005 standard errors of theirs and the standard
 deviations within 1e-5. On simulated data with about 100 rows per group, the
 coefficients were within 0.001 standard errors of the exact
-maximum-likelihood estimates (by quadrature).
+maximum-likelihood estimates (by quadrature). With small groups it is
+biased; see [adaptive quadrature](#small-groups-adaptive-quadrature).
 
 `random_method="joint-mode"` instead holds the coefficients and the effects at
 their joint mode (lme4's `nAGQ = 0`): faster, and close to the Laplace fit
