@@ -156,9 +156,11 @@ _RANDOM = """
     random_nodes : int, optional
         The quadrature's points per dimension with
         ``random_method="adaptive"``: 9 by default (at least 5) for the
-        binary and ordered logit; 5 by default (at least 3) for the
+        binary and ordered logit; 5 by default (at least 5) for the
         multinomial logit, whose rule is their product over the J - 1
-        dimensions (625 points per group for J = 5; at most 20,000).
+        dimensions (625 points per group for J = 5; at most 20,000). With
+        the multinomial logit, groups of 30 rows or more take 3 points per
+        dimension.
     random_cov : {"unstructured", "diagonal"}, default "unstructured"
         The form of Sigma (multinomial; the ordered logit's is 1 x 1).
     random_tol : float, default 1e-6

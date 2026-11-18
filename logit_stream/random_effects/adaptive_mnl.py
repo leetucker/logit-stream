@@ -29,6 +29,15 @@ importance sampling with 1,024 points was 0.1 off (its error is common to
 all groups, since the points are shared). Pruning the product's low-weight
 corners lost most of the accuracy.
 
+Groups of LARGE_ROWS rows or more, whose integrands are close to normal,
+take the smaller rule of SMALL_NODES points per dimension (81 for J = 5).
+One point (Laplace's approximation) would not do: with the points held
+during a step it loses the posterior's spread from Sigma's equation, and
+biases Sigma down. With a third of the groups of 30 to 90 rows, the
+estimates moved by less than 0.05 of their standard errors. The reported
+log-likelihood and the groups' moments come from one more read with the
+full rule for every group.
+
 **The fit.** It is that of `adaptive.py`, in more dimensions. Newton's
 method runs in the coefficients b, the fixed effect's free levels and
 Sigma^-1's elements, with the points held where they are during a step.
@@ -59,16 +68,19 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import numba as nb
 import numpy as np
 from hdfe_stream.core.report import warn
 from numpy.polynomial.hermite import hermgauss
-from scipy.special import logsumexp
 
 from ..newton import _design, _Driver
 
 MNL_NODES = 5               # the default points per dimension (random_nodes)
-MNL_MIN_NODES = 3           # fewer: see MIN_NODES in adaptive.py
+MNL_MIN_NODES = 5           # fewer bias the fit (3 per dimension: a rare level's variance
+                            # up by half with ~3 rows per group, as Laplace's)
 MAX_POINTS = 20_000         # points per group (random_nodes^(J-1)), at most
+LARGE_ROWS = 30             # groups of this many rows or more take SMALL_NODES per dimension
+SMALL_NODES = 3
 VAR_MIN = 1e-6              # the smallest eigenvalue of Sigma a step may reach
 HALF_LOG_2PI = 0.5 * float(np.log(2 * np.pi))
 
@@ -87,6 +99,113 @@ def _rule(k, d):
     if k % 2 == 0:
         Z, LW = np.vstack([Z, np.zeros((1, d))]), np.r_[LW, -np.inf]
     return Z, LW, int(np.flatnonzero((Z == 0.0).all(axis=1))[0])
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _group_kernel(E0, A, vx, y, w, X, st, kc, logL, pi, Pbar, PP, Ds, Db, score0, curv0):
+    """Each group's quadrature (the groups' rows st[g]:st[g+1] of a chunk),
+    in parallel over the groups: its log-likelihood and point shares from
+    the points' log-weights (vx, all but the rows' log-likelihood); each
+    row's pi-mean probabilities and products of probabilities; and each
+    point's deviations from the pi-means of the group's probability sums
+    (Ds: levels; Db: levels 1.. by the columns of X), which are the
+    deviations of the levels' and b's scores negated; the probabilities at
+    the centre point kc give the group's score and curvature there."""
+    G, Kt, d = A.shape
+    J = E0.shape[1]
+    Kx = X.shape[1]
+    for g in nb.prange(G):
+        r0, r1 = st[g], st[g + 1]
+        ng = r1 - r0
+        p = np.empty((ng, Kt, J))
+        F = np.zeros(Kt)
+        eta = np.empty(J)
+        for k in range(Kt):
+            for ii in range(ng):
+                i = r0 + ii
+                mx = -np.inf
+                for j in range(J):
+                    e = E0[i, j]
+                    if j > 0:
+                        e += A[g, k, j - 1]
+                    eta[j] = e
+                    if e > mx:
+                        mx = e
+                den = 0.0
+                for j in range(J):
+                    x = np.exp(eta[j] - mx)
+                    p[ii, k, j] = x
+                    den += x
+                for j in range(J):
+                    p[ii, k, j] /= den
+                F[k] += w[i] * (eta[y[i]] - mx - np.log(den))
+        # the point shares
+        vmax = -np.inf
+        for k in range(Kt):
+            F[k] += vx[g, k]
+            if F[k] > vmax:
+                vmax = F[k]
+        tot = 0.0
+        for k in range(Kt):
+            tot += np.exp(F[k] - vmax)
+        lg = vmax + np.log(tot)
+        logL[g] = lg
+        for k in range(Kt):
+            pi[g, k] = np.exp(F[k] - lg)
+        # the rows' pi-means, and the points' sums
+        Sk = np.zeros((Kt, J))
+        Tk = np.zeros((Kt, J - 1, Kx))
+        for ii in range(ng):
+            i = r0 + ii
+            for a in range(J):
+                Pbar[i, a] = 0.0
+                for c in range(J):
+                    PP[i, a, c] = 0.0
+            for k in range(Kt):
+                pk = pi[g, k]
+                for a in range(J):
+                    pa = p[ii, k, a]
+                    Pbar[i, a] += pk * pa
+                    Sk[k, a] += w[i] * pa
+                    q = pk * pa
+                    for c in range(a, J):
+                        PP[i, a, c] += q * p[ii, k, c]
+                    if a > 0:
+                        wpa = w[i] * pa
+                        for c in range(Kx):
+                            Tk[k, a - 1, c] += wpa * X[i, c]
+            for a in range(J):
+                for c in range(a + 1, J):
+                    PP[i, c, a] = PP[i, a, c]
+        mS = np.zeros(J)
+        mT = np.zeros((J - 1, Kx))
+        for k in range(Kt):
+            pk = pi[g, k]
+            for a in range(J):
+                mS[a] += pk * Sk[k, a]
+            for a in range(J - 1):
+                for c in range(Kx):
+                    mT[a, c] += pk * Tk[k, a, c]
+        for k in range(Kt):
+            for a in range(J):
+                Ds[g, k, a] = mS[a] - Sk[k, a]
+            for a in range(J - 1):
+                for c in range(Kx):
+                    Db[g, k, a, c] = mT[a, c] - Tk[k, a, c]
+        # the centre point: the score and curvature in the random levels
+        for a in range(d):
+            score0[g, a] = 0.0
+            for c in range(d):
+                curv0[g, a, c] = 0.0
+        for ii in range(ng):
+            i = r0 + ii
+            wi = w[i]
+            for a in range(d):
+                pa = p[ii, kc, a + 1]
+                score0[g, a] += wi * ((1.0 if y[i] == a + 1 else 0.0) - pa)
+                curv0[g, a, a] += wi * pa
+                for c in range(d):
+                    curv0[g, a, c] -= wi * pa * p[ii, kc, c + 1]
 
 
 def _sigma_params(d, cov):
@@ -108,7 +227,8 @@ class _AdaptiveMNL:
     """The adaptive quadrature fit of a multinomial `_RandomEffects` with
     one random grouping (see the module docstring)."""
 
-    def __init__(self, re, driver, n_nodes, log, logger=None):
+    def __init__(self, re, driver, n_nodes, log, logger=None, large_rows=None):
+        large_rows = LARGE_ROWS if large_rows is None else large_rows
         if (re.model.kind != "mlogit" or len(re.random) != 1 or re.kind != "tree"
                 or re.factors[0] is not re.random[0]):
             raise ValueError("random_method='adaptive' is for mlogit_stream with one random "
@@ -138,6 +258,15 @@ class _AdaptiveMNL:
                 f"most {MAX_POINTS:,} are supported: use fewer nodes, or "
                 "random_method='laplace'")
         self.z, self.lw, self.kc = _rule(self.K, self.d)
+        # groups of LARGE_ROWS rows or more, whose integrands are close to normal,
+        # take the smaller rule of SMALL_NODES points per dimension
+        size = re.ncnt_u.sum(axis=1)
+        self.large = size >= large_rows
+        self.rules = [(self.z, self.lw, self.kc, False)]
+        if self.K > SMALL_NODES and self.large.any():
+            self.rules.append((*_rule(SMALL_NODES, self.d), True))
+        else:
+            self.large[:] = False
 
     # ------------------------------------------------------------ parameters
     def lam_of(self, S):
@@ -243,12 +372,11 @@ class _AdaptiveMNL:
         docstring), each group's score and curvature at its mode, and its
         posterior mean and covariance. None if a row's probability is 0
         there."""
-        re, m, driver = self.re, self.m, self.driver
+        m, driver = self.m, self.driver
         driver.passes += 1
         J, d, P, ns = self.J, self.d, m.P, self.ns
         Kx = P // (J - 1)
-        z, lw, kc = self.z, self.lw, self.kc
-        Kt = len(z)
+        Kt = len(self.z)
         own, Ep = self.own, self.Ep
         Lam = self._Lam(lam)
         S = np.linalg.inv(Lam)
@@ -266,92 +394,96 @@ class _AdaptiveMNL:
             Jaa=np.zeros((Gf, J, J)), JaE=np.zeros((Gf, J, nE)), n_groups=0,
             score0=np.zeros((G, d)), curv0=np.zeros((G, d, d)), pmean=np.zeros((G, d)),
             pcov=np.zeros((G, d, d)))
-        # rows per chunk: the n x points x (J + d Kx) arrays of about chunk_bytes
-        width = 8 * Kt * (2 * J + d * Kx + 2)
+        c = SimpleNamespace(Lam=Lam, ldL=ldL, coef=coef, jj=jj, ll_=ll_, Sv=Sv, nE=nE, mode=mode,
+                            Rg=Rg, logdetR=logdetR, b=b, alpha=alpha)
+        # rows per chunk: the groups' points x (J + d Kx) arrays of about chunk_bytes
+        width = 8 * Kt * (J + d * Kx + 4)
         rows_per = max(64, int(driver.chunk_bytes // width))
         for X, y, w, u in self._chunks(rows_per):
-            n = len(y)
-            st = np.r_[0, np.flatnonzero(u[1:] != u[:-1]) + 1]
-            gu = u[st]
-            gc = len(st)
-            lg = np.repeat(np.arange(gc), np.diff(np.r_[st, n]))
-            A = mode[gu][:, None, :] + np.swapaxes(Rg[gu] @ z.T, 1, 2)       # gc x Kt x d
-            E = np.repeat(self._base(b, alpha, X, u)[:, None, :], Kt, axis=1)  # n x Kt x J
-            E[:, :, 1:] += A[lg]
-            Pr, lden = self._probs(E)
-            lp = np.take_along_axis(E, y[:, None, None].repeat(Kt, 1), 2)[..., 0] - lden
-            F = np.add.reduceat(lp * w[:, None], st, axis=0)                   # gc x Kt
-            quad = ((A @ Lam) * A).sum(axis=2)
-            v = lw[None, :] + logdetR[gu][:, None] + F + 0.5 * ldL - 0.5 * quad \
-                - d * HALF_LOG_2PI
-            logL = logsumexp(v, axis=1)
-            if not np.all(np.isfinite(logL)):
-                return None
-            pi = np.exp(v - logL[:, None])
-            out.ll += float(logL.sum())
-            out.n_groups += gc
-            pr = pi[lg]                                                       # n x Kt
-            Ppr = Pr * pr[:, :, None]
-            Pbar = Ppr.sum(axis=1)
-            Wbar = -(np.swapaxes(Ppr, 1, 2) @ Pr)
-            Wbar[:, np.arange(J), np.arange(J)] += Pbar
-            Rbar = -Pbar
-            Rbar[np.arange(n), y] += 1.0
-            # b: the weighted rows' gradient and information
-            out.gE[:P] += (X.T @ (Rbar[:, 1:] * w[:, None])).T.ravel()
-            Ww = Wbar * w[:, None, None]
-            for a in range(1, J):
-                sa = slice((a - 1) * Kx, a * Kx)
-                for c in range(a, J):
-                    sc = slice((c - 1) * Kx, c * Kx)
-                    H = (X * Ww[:, a, c][:, None]).T @ X
-                    out.JEE[sa, sc] += H
-                    if c != a:
-                        out.JEE[sc, sa] += H.T
-            # Lambda: each point's score, 1/2 c (S_jl - a_j a_l), averaged
-            sl = coef[None, None, :] * (Sv[None, None, :] - A[:, :, jj] * A[:, :, ll_])
-            slbar = (pi[:, None, :] @ sl)[:, 0, :]
-            out.gE[P:] += slbar.sum(axis=0)
-            # the points' deviations from their pi-means: b, Lambda and the levels
-            dP = Pr - Pbar[:, None, :]                                        # n x Kt x J
-            dPw = dP[:, :, 1:] * w[:, None, None]
-            Db = np.empty((gc, Kt, J - 1, Kx))
-            for c in range(Kx):
-                Db[..., c] = -np.add.reduceat(dPw * X[:, c][:, None, None], st, axis=0)
-            Db = Db.reshape(gc, Kt, P)
-            Dl = sl - slbar[:, None, :]
-            DE = np.concatenate([Db, Dl], axis=2)                             # gc x Kt x nE
-            Wd = (np.sqrt(pi)[:, :, None] * DE).reshape(gc * Kt, nE)
-            out.JEE -= Wd.T @ Wd
-            if fe is not None:
-                cell = fe.of_unit[gu]
-                rcell = fe.of_unit[u]
-                out.ga += _bysum(rcell, Rbar * w[:, None], Gf)
-                out.Jaa += _bysum(rcell, Ww.reshape(n, -1), Gf).reshape(Gf, J, J)
-                Bv = (Ww[:, :, 1:, None] * X[:, None, None, :]).reshape(n, J, P)
-                out.JaE[:, :, :P] += _bysum(rcell, Bv.reshape(n, -1), Gf).reshape(Gf, J, P)
-                Ds = -np.add.reduceat(dP * w[:, None, None], st, axis=0)       # gc x Kt x J
-                Dsp = np.swapaxes(Ds * pi[:, :, None], 1, 2)                   # gc x J x Kt
-                out.Jaa -= _bysum(cell, (Dsp @ Ds).reshape(gc, -1), Gf).reshape(Gf, J, J)
-                out.JaE -= _bysum(cell, (Dsp @ DE).reshape(gc, -1), Gf).reshape(Gf, J, nE)
-            # the mode's score and curvature, and the posterior moments
-            lv = re.lv
-            pc = Pr[:, kc, :]
-            Rc = -pc
-            Rc[np.arange(n), y] += 1.0
-            out.score0[gu] = np.add.reduceat(Rc[:, lv] * w[:, None], st, axis=0)
-            q = pc[:, lv]
-            Wc = -q[:, :, None] * q[:, None, :]
-            Wc[:, np.arange(d), np.arange(d)] += q
-            out.curv0[gu] = np.add.reduceat(Wc * w[:, None, None], st, axis=0)
-            Ap = np.swapaxes(A * pi[:, :, None], 1, 2)                           # gc x d x Kt
-            pm = Ap.sum(axis=2)
-            out.pmean[gu] = pm
-            out.pcov[gu] = Ap @ A - pm[:, :, None] * pm[:, None, :]
+            if len(self.rules) == 1:
+                self._accumulate(out, c, X, y, w, u, *self.rules[0][:3])
+                continue
+            for z, lw, kc, large in self.rules:
+                sel = self.large[u] == large
+                if sel.any():
+                    self._accumulate(out, c, X[sel], y[sel], w[sel], u[sel], z, lw, kc)
         # Lambda's information: the prior's part, the same at every point
         # (-d2 of 1/2 log|Lambda| in lam_p, lam_q: 1/2 tr(S E_p S E_q))
         out.JEE[P:, P:] += out.n_groups * 0.5 * np.einsum("ab,pbc,cd,qda->pq", S, Ep, S, Ep)
         return out
+
+    def _accumulate(self, out, c, X, y, w, u, z, lw, kc):
+        """One chunk's groups (whole groups), all with the rule (z, lw, kc),
+        into `out`."""
+        J, d, P = self.J, self.d, self.m.P
+        Kx = P // (J - 1)
+        Kt = len(z)
+        Lam, ldL, coef, jj, ll_, Sv, nE = c.Lam, c.ldL, c.coef, c.jj, c.ll_, c.Sv, c.nE
+        mode, Rg, logdetR, b, alpha = c.mode, c.Rg, c.logdetR, c.b, c.alpha
+        fe = self.fe
+        Gf = fe.G if fe is not None else 0
+        n = len(y)
+        st = np.r_[0, np.flatnonzero(u[1:] != u[:-1]) + 1]
+        gu = u[st]
+        gc = len(st)
+        A = mode[gu][:, None, :] + np.swapaxes(Rg[gu] @ z.T, 1, 2)       # gc x Kt x d
+        quad = ((A @ Lam) * A).sum(axis=2)
+        vx = lw[None, :] + logdetR[gu][:, None] + 0.5 * ldL - 0.5 * quad - d * HALF_LOG_2PI
+        logL, pi = np.empty(gc), np.empty((gc, Kt))
+        Pbar, Wbar = np.empty((n, J)), np.empty((n, J, J))
+        Ds, Db = np.empty((gc, Kt, J)), np.empty((gc, Kt, J - 1, Kx))
+        sc0, cv0 = np.empty((gc, d)), np.empty((gc, d, d))
+        _group_kernel(np.ascontiguousarray(self._base(b, alpha, X, u)),
+                      np.ascontiguousarray(A), np.ascontiguousarray(vx),
+                      y.astype(np.int64), np.ascontiguousarray(w, dtype=np.float64),
+                      np.ascontiguousarray(X, dtype=np.float64), np.r_[st, n].astype(np.int64),
+                      kc, logL, pi, Pbar, Wbar, Ds, Db, sc0, cv0)
+        if not np.all(np.isfinite(logL)):
+            return None
+        out.ll += float(logL.sum())
+        out.n_groups += gc
+        Wbar *= -1.0
+        Wbar[:, np.arange(J), np.arange(J)] += Pbar
+        Rbar = -Pbar
+        Rbar[np.arange(n), y] += 1.0
+        # b: the weighted rows' gradient and information
+        out.gE[:P] += (X.T @ (Rbar[:, 1:] * w[:, None])).T.ravel()
+        Ww = Wbar * w[:, None, None]
+        for a in range(1, J):
+            sa = slice((a - 1) * Kx, a * Kx)
+            for c in range(a, J):
+                sc = slice((c - 1) * Kx, c * Kx)
+                H = (X * Ww[:, a, c][:, None]).T @ X
+                out.JEE[sa, sc] += H
+                if c != a:
+                    out.JEE[sc, sa] += H.T
+        # Lambda: each point's score, 1/2 c (S_jl - a_j a_l), averaged
+        sl = coef[None, None, :] * (Sv[None, None, :] - A[:, :, jj] * A[:, :, ll_])
+        slbar = (pi[:, None, :] @ sl)[:, 0, :]
+        out.gE[P:] += slbar.sum(axis=0)
+        # the points' deviations from their pi-means: b, Lambda and the levels
+        Db = Db.reshape(gc, Kt, P)
+        Dl = sl - slbar[:, None, :]
+        DE = np.concatenate([Db, Dl], axis=2)                             # gc x Kt x nE
+        Wd = (np.sqrt(pi)[:, :, None] * DE).reshape(gc * Kt, nE)
+        out.JEE -= Wd.T @ Wd
+        if fe is not None:
+            cell = fe.of_unit[gu]
+            rcell = fe.of_unit[u]
+            out.ga += _bysum(rcell, Rbar * w[:, None], Gf)
+            out.Jaa += _bysum(rcell, Ww.reshape(n, -1), Gf).reshape(Gf, J, J)
+            Bv = (Ww[:, :, 1:, None] * X[:, None, None, :]).reshape(n, J, P)
+            out.JaE[:, :, :P] += _bysum(rcell, Bv.reshape(n, -1), Gf).reshape(Gf, J, P)
+            Dsp = np.swapaxes(Ds * pi[:, :, None], 1, 2)                   # gc x J x Kt
+            out.Jaa -= _bysum(cell, (Dsp @ Ds).reshape(gc, -1), Gf).reshape(Gf, J, J)
+            out.JaE -= _bysum(cell, (Dsp @ DE).reshape(gc, -1), Gf).reshape(Gf, J, nE)
+        # the mode's score and curvature, and the posterior moments
+        out.score0[gu] = sc0
+        out.curv0[gu] = cv0
+        Ap = np.swapaxes(A * pi[:, :, None], 1, 2)                           # gc x d x Kt
+        pm = Ap.sum(axis=2)
+        out.pmean[gu] = pm
+        out.pcov[gu] = Ap @ A - pm[:, :, None] * pm[:, None, :]
 
     # ------------------------------------------------------------ the step
     def _system(self, E):
@@ -488,8 +620,19 @@ class _AdaptiveMNL:
                  self.logger)
         Vb_cond, V_lam, dbdlam = self.inference(E)
         theta = self.pack(b, alpha, mode)
-        return dict(theta=theta, b=b, alpha=alpha, lam=lam, mode=mode, E=E, Vb_cond=Vb_cond,
-                    V_lam=V_lam, dbdlam=dbdlam, ll=E.ll,
+        ll, moments = E.ll, E
+        if len(self.rules) > 1:
+            # the value (and the groups' moments) with the full rule for every group:
+            # the smaller rule is accurate for the estimates, less so for the value
+            rules, self.rules = self.rules, self.rules[:1]
+            try:
+                Ef = self.evaluate(b, alpha, lam, mode, Rg, logdetR)
+            finally:
+                self.rules = rules
+            if Ef is not None:
+                ll, moments = Ef.ll, Ef
+        return dict(theta=theta, b=b, alpha=alpha, lam=lam, mode=mode, E=E, moments=moments,
+                    Vb_cond=Vb_cond, V_lam=V_lam, dbdlam=dbdlam, ll=ll,
                     info={"adaptive_rounds": it, "adaptive_steps": n_steps,
                           "adaptive_converged": converged, "adaptive_decrement": dec,
                           "adaptive_nodes": self.K, "adaptive_loglik_path": path,
@@ -524,7 +667,8 @@ def _fit_adaptive_mnl(driver, re, fit, re_info, fml, tol, n_nodes, log, logger):
     E = res["E"]
     f = ims.f
     sd = np.zeros((f.G, re.m))
-    sd[:, re.lv] = np.sqrt(np.clip(np.diagonal(E.pcov, axis1=1, axis2=2), 0, None))
+    sd[:, re.lv] = np.sqrt(np.clip(np.diagonal(res["moments"].pcov, axis1=1, axis2=2), 0,
+                                   None))
     re.sd_override = [np.where(f.keep[:, None], sd, np.nan)]
     re.adaptive_V = res["Vb_cond"]
     re.method = "adaptive"

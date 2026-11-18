@@ -14,12 +14,12 @@ New
 - **`random_method="adaptive"` for the multinomial logit**: adaptive Gauss-Hermite quadrature for
   the (J - 1)-vector of random intercepts of one grouping (`mlogit_stream`, optionally within an
   absorbed fixed effect), with the product of `random_nodes` points per dimension (default 5, at
-  least 3; at most 20,000 points per group), centred at each group's conditional mode and scaled
+  least 5; at most 20,000 points per group; groups of 30 rows or more take 3), centred at each group's conditional mode and scaled
   by its conditional covariance. Laplace's approximation is biased with small groups. With J = 5
   and three rows per group in a simulation, it put the common levels' variances about a fifth
   too low, the rarest level's twice too high, and the correlations 40% too low. The adaptive
   fit agrees with brute-force maximum likelihood (estimates to 3e-3, standard errors of the
-  coefficients and of Sigma to 3%). It is slower than the Laplace fit (about 4x at J = 5), and
+  coefficients and of Sigma to 3%). It takes about 1.6 times the Laplace fit's time at J = 5 (a numba kernel per group), and
   `draw_parameters` / `draw_ranef` are not yet available for it. `random_nodes` now defaults to
   the method's own value.
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's

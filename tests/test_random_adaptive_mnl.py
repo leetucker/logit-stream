@@ -129,8 +129,8 @@ def test_diagonal_and_laplace_differ():
 
 def test_refusals():
     df = _data(seed=4, G=60)
-    with pytest.raises(ValueError, match="at least 3"):
-        mlogit_stream("y ~ x", df, random="g", random_method="adaptive", random_nodes=2,
+    with pytest.raises(ValueError, match="at least 5"):
+        mlogit_stream("y ~ x", df, random="g", random_method="adaptive", random_nodes=3,
                       verbose=False)
     many = df.with_columns((pl.col("y") + 3 * (pl.col("x") > 0).cast(pl.Int64)).alias("y"))
     with pytest.raises(ValueError, match="points per group"):
@@ -142,3 +142,29 @@ def test_refusals():
     fit = mlogit_stream("y ~ x", df, random="g", random_method="adaptive", verbose=False)
     with pytest.raises(ValueError, match="multinomial"):
         fit.draw_parameters(2)
+
+
+def test_large_groups_take_the_smaller_rule(monkeypatch):
+    """Groups of LARGE_ROWS rows or more use 3 points per dimension: the
+    estimates are those of the full rule everywhere, to a small fraction of
+    their standard errors; the log-likelihood is the full rule's."""
+    from logit_stream.random_effects import adaptive_mnl as M
+    rng = np.random.default_rng(5)
+    G = 300
+    n_g = np.where(rng.random(G) < 0.3, rng.integers(30, 90, G), 1 + rng.geometric(0.4, G))
+    g = np.repeat(np.arange(G), n_g)
+    n = len(g)
+    x = rng.normal(size=n)
+    a = rng.multivariate_normal([0, 0], [[0.64, 0.2], [0.2, 0.49]], G)
+    E = np.column_stack([np.zeros(n), -0.5 + 0.6 * x + a[g, 0], -1.0 - 0.4 * x + a[g, 1]])
+    y = (np.cumsum(np.exp(E) / np.exp(E).sum(1, keepdims=True), 1)
+         < rng.random(n)[:, None]).sum(1)
+    df = pl.DataFrame({"y": y, "x": x, "g": g})
+    tiered = mlogit_stream("y ~ x", df, random="g", random_method="adaptive", verbose=False)
+    monkeypatch.setattr(M, "LARGE_ROWS", 10**9)
+    full = mlogit_stream("y ~ x", df, random="g", random_method="adaptive", verbose=False)
+    se = np.sqrt(np.diag(full.vcov))
+    assert np.max(np.abs(tiered.beta - full.beta) / se) < 0.03
+    St, Sf = tiered.random_effects["g"], full.random_effects["g"]
+    assert np.max(np.abs(St["Sigma"] - Sf["Sigma"]) / Sf["Sigma_se"]) < 0.05
+    assert abs(tiered.loglik - full.loglik) < 0.01

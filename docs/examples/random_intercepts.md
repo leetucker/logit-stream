@@ -244,6 +244,45 @@ fit here, which `random_method="laplace"` gives). Nine nodes are within
 `random_nodes` if the estimates move when you do. For a binary outcome use
 `logit_stream`, not a two-level `mlogit_stream`.
 
+### The multinomial logit
+
+With a multinomial outcome Laplace's bias is larger, and not only
+downward. On simulated data (J = 5, 20,000 firms within 50 absorbed cells,
+firm intercepts with sds 0.8, 0.8, 0.6 and 0.6, correlation 0.3, level E
+about 4% of the rows), the bias in each level's variance over 5
+simulations, with "small" firms of 0 to 10 known workers (10% with none,
+30% with one, mean 3):
+
+| firms | method | B | C | D | E (rare) | mean correlation |
+|---|---|---|---|---|---|---|
+| small (mean 3 rows) | Laplace | -17% | -16% | -23% | +109% | 0.17 |
+| | adaptive | +1% | 0% | -12% | -14% | 0.32 |
+| 0 to 10 rows (mean 5) | Laplace | -13% | -14% | -12% | +43% | 0.22 |
+| | adaptive | -1% | -2% | -6% | 0% | 0.31 |
+| 5 to 10 rows (mean 7.5) | Laplace | -10% | -10% | -8% | +15% | 0.24 |
+| | adaptive | 0% | 0% | -4% | -9% | 0.31 |
+
+The slopes were within 3% under both. The rare level's sd varies by
+about 0.03 across simulations, so its adaptive figures are within noise.
+With 7 points per dimension the estimates agreed with 5 to 0.001; with 3
+they moved back toward Laplace's (the rare level's sd 0.66 to 0.76),
+which is why at least 5 are required.
+
+```python
+fit = mlogit_stream("y ~ x | cell", df, random="firm", random_method="adaptive")
+```
+
+The rule is the product of `random_nodes` points per dimension (default
+5) over the J - 1 intercepts: 625 points per group for J = 5, centred at
+the group's conditional mode and scaled by its conditional covariance.
+Groups of 30 rows or more, whose integrands are close to normal, take 3
+points per dimension (81). The fit took about 1.6 times the Laplace fit's
+time in the simulation above (84 s against 51 s for 60,000 rows). The
+tests check it against brute-force integration for J = 3, with and without
+a fixed effect: the estimates to 3e-3, the coefficients' and $\Sigma$'s
+standard errors to 3%. `draw_parameters` and `draw_ranef` are not yet
+available for it. See `logit_stream.random_effects.adaptive_mnl`.
+
 **Conditional sds.** `ranef()` gives each group's effect (its conditional
 mode) and, in `sd_<grouping>` (`sd_<grouping>:<level>` for the multinomial
 logit, 0 for the base level), its conditional standard deviation: the
