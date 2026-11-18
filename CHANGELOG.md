@@ -22,6 +22,14 @@ New
   `random_method="adaptive"`, the random intercept's sd. The groups' own intercepts are not
   drawn: a drawn result's `predict` leaves them out. Not available for the Laplace or joint-mode
   random intercepts, several fixed effects, or the mixed and nested logit.
+- **`draw_ranef()` and `draw_parameters(..., ranef=True)`: draws of each group's random
+  intercept from its conditional distribution** given the group's rows and the parameters (at the
+  estimates or at a parameter draw), against each row's own linear predictor. Each draw is exact,
+  from the density on a grid around the group's mode, sampled by its inverse cdf. The drawn
+  result's `ranef()` holds the draws and `predict` adds them. `newdata=` gives groups the fit did
+  not see a draw from N(0, sd^2). With `draw_parameters(n, ranef=True)`, all n draws come from one
+  read of the estimation sample (sorted by group, in batches of whole groups). Available for the
+  binary and ordered logit and probit with one random grouping; not yet for the multinomial logit.
 - **`fixef()` has standard errors** (`se_<name>`, or `se_<name>:<level>`) where
   `draw_parameters` is available: each level's variance given the coefficients, plus what the
   coefficients' uncertainty adds.
@@ -31,8 +39,8 @@ New
 Documentation
 - The random-intercepts page has a section on Laplace's small-group bias and the adaptive
   quadrature.
-- New example, "Multiple imputation": parameter draws, each firm's intercept drawn given its
-  known workers, and the imputations (`examples/multiple_imputation.py`).
+- New example, "Multiple imputation": parameter and firm-intercept draws, and the imputations in
+  Polars (`examples/multiple_imputation.py`).
 
 ## 0.4.0
 

@@ -43,6 +43,7 @@ model, as with several fixed effects
    .. automethod:: ranef
    .. automethod:: varcorr
    .. automethod:: draw_parameters
+   .. automethod:: draw_ranef
    .. automethod:: sample
    .. automethod:: to_pyfixest
 
@@ -59,6 +60,7 @@ model, as with several fixed effects
    .. automethod:: ranef
    .. automethod:: varcorr
    .. automethod:: draw_parameters
+   .. automethod:: draw_ranef
    .. automethod:: sample
 
 .. autoclass:: OrderedProbitResult

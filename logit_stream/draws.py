@@ -222,6 +222,7 @@ def _drawn(result, spec, i, beta, levels, tau, fname, fcols):
     if re:
         # the group intercepts are not part of a draw
         s["effects"] = [e for e in spec.get("effects", []) if e[2] != "random"]
+        s["ranef_base"] = spec.get("ranef_base", spec.get("ranef", {}))   # its groups
         s["ranef"] = {}
         re = {k: dict(v) for k, v in re.items()}
         if tau is not None:
@@ -232,3 +233,249 @@ def _drawn(result, spec, i, beta, levels, tau, fname, fcols):
     diag["draw"] = i
     return replace(result, beta=np.asarray(beta, float), random_effects=re, diagnostics=diag,
                    _spec=s)
+
+
+# ------------------------------------------------------------------ group intercepts
+RANEF_GRID = 101            # points of each group's grid
+RANEF_SPAN = 8.0            # the grid's half-width, in conditional sds at the mode
+RANEF_CHUNK_CELLS = 8_000_000   # rows x grid points held at once
+
+
+def _ranef_setup(result):
+    """Check that `draw_ranef` applies, and return (grouping name, its key
+    columns, the link)."""
+    from .results import MultinomialLogitResult, OrderedLogitResult
+    re = result.random_effects
+    if not re:
+        raise ValueError("draw_ranef needs a model with random intercepts (random=)")
+    if isinstance(result, MultinomialLogitResult) or not isinstance(result,
+                                                                    OrderedLogitResult):
+        raise ValueError("draw_ranef is available for the binary and ordered logit and probit "
+                         "(one scalar random intercept); not for the multinomial logit yet")
+    if len(re) != 1:
+        raise ValueError(f"draw_ranef needs one random grouping, not {len(re)} ({list(re)})")
+    (name,) = re
+    if re[name].get("structure") not in (None, "tree"):
+        raise ValueError("draw_ranef needs nested (not crossed) groupings")
+    from .models import LINKS
+    return name, list(result._spec["fe_cols"][name]), LINKS[result.link]
+
+
+def _ordered_row_terms(link, y, z, cuts):
+    """log P(y | z) of each row and its first two derivatives in z, for the
+    ordered model P(y <= j) = F(c_j - z); y the level's code."""
+    c = np.r_[-np.inf, cuts, np.inf]
+    up, lo = c[y + 1] - z, c[y] - z
+    Fu, Fl = link.cdf(up), link.cdf(lo)
+    Su, Sl = link.sf(up), link.sf(lo)
+    # the probability from the nearer tail, for precision
+    p = np.where(lo > 0, Sl - Su, Fu - Fl)
+    p = np.maximum(p, 1e-300)
+    fu = np.where(np.isfinite(up), link.pdf(up, Fu, Su), 0.0)
+    fl = np.where(np.isfinite(lo), link.pdf(lo, Fl, Sl), 0.0)
+    du = np.where(np.isfinite(up), link.dpdf(up, fu, Fu), 0.0)
+    dl = np.where(np.isfinite(lo), link.dpdf(lo, fl, Fl), 0.0)
+    d1 = -(fu - fl) / p                       # d log p / dz
+    d2 = (du - dl) / p - d1 * d1              # d2 log p / dz2
+    return np.log(p), d1, d2
+
+
+def _ordered_logp(link, y, z, cuts):
+    c = np.r_[-np.inf, cuts, np.inf]
+    up, lo = c[y + 1] - z, c[y] - z
+    p = np.where(lo > 0, link.sf(lo) - link.sf(up), link.cdf(up) - link.cdf(lo))
+    return np.log(np.maximum(p, 1e-300))
+
+
+def _draw_chunk(link, g, starts, y, w, eta, cuts, tau, u, grid_pts=RANEF_GRID,
+                span=RANEF_SPAN):
+    for sp in (span, 2 * span, 4 * span):
+        out = _draw_chunk1(link, g, starts, y, w, eta, cuts, tau, u, grid_pts, sp)
+        if out is not None:
+            return out
+    raise RuntimeError("draw_ranef: a group's conditional distribution reaches past its grid")
+
+
+def _draw_chunk1(link, g, starts, y, w, eta, cuts, tau, u, grid_pts, span):
+    """Each group's draw (and its conditional mean and sd) from
+    p(d | its rows) proportional to prod_i p(y_i | eta_i + d)^w_i N(d; 0, tau^2),
+    for the rows of whole groups sorted by group: g the rows' local group
+    index (0..n-1), `starts` each group's first row, u one uniform per
+    group. Newton for the mode, then the exact density on a grid around it,
+    sampled by its inverse cdf (each point's mass spread evenly over its
+    cell)."""
+    n = len(starts)
+    t2 = tau * tau
+    d = np.zeros(n)
+    for _ in range(100):
+        _, d1, d2 = _ordered_row_terms(link, y, eta + d[g], cuts)
+        s = np.add.reduceat(w * d1, starts) - d / t2
+        h = -np.add.reduceat(w * d2, starts) + 1 / t2
+        step = np.clip(s / h, -2.0, 2.0)
+        d += step
+        if np.max(np.abs(step), initial=0.0) < 1e-9:
+            break
+    _, _, d2 = _ordered_row_terms(link, y, eta + d[g], cuts)
+    sd0 = 1 / np.sqrt(np.maximum(-np.add.reduceat(w * d2, starts) + 1 / t2, 1e-300))
+    zs = np.linspace(-span, span, grid_pts)
+    grid = d[:, None] + sd0[:, None] * zs[None, :]                      # n x K
+    lp = np.add.reduceat(w[:, None] * _ordered_logp(link, y[:, None], eta[:, None] + grid[g],
+                                                    cuts), starts, axis=0)
+    lp -= 0.5 * grid * grid / t2
+    lp -= lp.max(axis=1, keepdims=True)
+    pmf = np.exp(lp)
+    pmf /= pmf.sum(axis=1, keepdims=True)
+    edge = pmf[:, 0] + pmf[:, -1]
+    if edge.max(initial=0.0) > 1e-9:
+        return None                             # (wider, then)
+    mean = (pmf * grid).sum(axis=1)
+    sd = np.sqrt(np.maximum((pmf * (grid - mean[:, None]) ** 2).sum(axis=1), 0.0))
+    cdf = np.cumsum(pmf, axis=1)
+    k = np.minimum((cdf < u[:, None]).sum(axis=1), grid_pts - 1)
+    r = np.arange(n)
+    lo_c = np.where(k > 0, cdf[r, np.maximum(k - 1, 0)], 0.0)
+    frac = np.clip((u - lo_c) / np.maximum(cdf[r, k] - lo_c, 1e-300), 0.0, 1.0)
+    h = grid[:, 1] - grid[:, 0]
+    return grid[r, k] + (frac - 0.5) * h, mean, sd
+
+
+def _ranef_rows(result, name, keys):
+    """The estimation sample as a lazy frame of what the draws need: the
+    group's row in the ranef table (`__g`), the outcome's code, the weight,
+    the covariates, the fixed effect's row in the fixef table, the offset;
+    sorted by group."""
+    spec = result._spec
+    frame = result._in_sample(spec["source"])
+    gtab = (spec.get("ranef_base") or spec["ranef"])[name].select(keys).with_row_index("__g")
+    frame = frame.join(gtab.lazy(), on=keys, how="inner")
+    levels = list(result.levels)
+    cols = [pl.col("__g"),
+            spec["yexpr"].replace_strict(levels, list(range(len(levels))),
+                                         return_dtype=pl.Int64).alias("__y")]
+    if result.weights:
+        cols.append(pl.col(result.weights).cast(pl.Float64).alias("__w"))
+    xs = result._xexprs()
+    cols += [ex.cast(pl.Float64).alias(f"__x{j}") for j, (_, ex) in enumerate(xs)]
+    fname = result.fe_names[0] if result.fe_names else None
+    if fname:
+        fcols = spec["fe_cols"][fname]
+        ftab = spec["fixef"][fname].select(fcols).with_row_index("__f")
+        frame = frame.join(ftab.lazy(), on=fcols, how="inner")
+        cols.append(pl.col("__f"))
+    if spec.get("offset") is not None:
+        cols.append(spec["offset"].cast(pl.Float64).alias("__off"))
+    return frame.select(cols).sort("__g"), len(xs), fname
+
+
+def _location(res, X, f, off, fname):
+    """The rows' linear predictor without the group intercept, and the
+    cutpoints, at `res`'s parameters (the binary logit's intercept as minus
+    its cutpoint)."""
+    beta = np.asarray(res.beta, float)
+    names = list(res.coefnames)
+    icpt = bool(names) and names[0] == "Intercept"
+    k = X.shape[1]
+    b = beta[1:1 + k] if icpt else beta[:k]
+    eta = X @ b
+    if fname:
+        a = res._spec["fixef"][fname][f"fe_{fname}"].to_numpy().astype(float)
+        eta = eta + a[f]
+    if off is not None:
+        eta = eta + off
+    return eta, np.asarray(res.cutpoints, float)
+
+
+def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CELLS):
+    """For each result in `results` (copies of one fit, at the estimates or
+    at draws of the parameters), one draw of every group's intercept from
+    its distribution given the group's rows and that result's parameters,
+    in one read of the estimation sample; returns copies whose `ranef()` is
+    the draw and whose `predict` adds it. Groups in `newdata` that the fit
+    did not see draw from N(0, sd^2)."""
+    first = results[0]
+    name, keys, link = _ranef_setup(first)
+    rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+    spec = first._spec
+    base = spec.get("ranef_base") or spec["ranef"]
+    table = base[name]
+    G = table.height
+    M = len(results)
+    taus = np.array([float(r.random_effects[name]["sd"][0]) for r in results])
+    U = rng.random((M, G))                     # one uniform per group and draw
+    draws, means, sds = np.zeros((M, G)), np.zeros((M, G)), np.zeros((M, G))
+    seen = np.zeros(G, bool)
+    lf, k, fname = _ranef_rows(first, name, keys)
+    wscale = 1.0
+    if first.weights and first.weights_type != "fweights":
+        st = first._spec["source"].filter(spec["usable"]).select(
+            pl.len().alias("n"), pl.col(first.weights).sum().alias("w")).collect()
+        wscale = float(st["n"][0]) / float(st["w"][0])
+    rows_per_chunk = max(int(chunk_cells // RANEF_GRID), 1000)
+    carry = None
+
+    def process(df):
+        gi = df["__g"].to_numpy()
+        starts = np.flatnonzero(np.r_[True, gi[1:] != gi[:-1]])
+        gid = gi[starts]
+        g = np.repeat(np.arange(len(starts)), np.diff(np.r_[starts, len(gi)]))
+        y = df["__y"].to_numpy()
+        w = df["__w"].to_numpy() * wscale if "__w" in df.columns else np.ones(len(gi))
+        X = (df.select([f"__x{j}" for j in range(k)]).to_numpy().astype(float) if k
+             else np.zeros((len(gi), 0)))
+        f = df["__f"].to_numpy() if fname else None
+        off = df["__off"].to_numpy() if "__off" in df.columns else None
+        for m, res in enumerate(results):
+            eta, cuts = _location(res, X, f, off, fname)
+            dm, mu, sd = _draw_chunk(link, g, starts, y, w, eta, cuts, taus[m], U[m, gid])
+            draws[m, gid], means[m, gid], sds[m, gid] = dm, mu, sd
+        seen[gid] = True
+
+    for batch in lf.collect_batches(chunk_size=rows_per_chunk):
+        if carry is not None:
+            batch = pl.concat([carry, batch])
+        if batch.height == 0:
+            continue
+        last = batch["__g"][-1]
+        tail = batch["__g"] == last
+        carry = batch.filter(tail)
+        body = batch.filter(~tail)
+        if body.height:
+            process(body)
+    if carry is not None and carry.height:
+        process(carry)
+    # a group without rows (all its weights zero, say): its prior
+    for m in range(M):
+        miss = ~seen
+        draws[m, miss] = taus[m] * _probit(U[m, miss])
+        sds[m, miss] = taus[m]
+    new = None
+    if newdata is not None:
+        from .results import as_lazy as _lazy
+        new = (_lazy(newdata).select(keys).unique(maintain_order=True)
+               .join(table.select(keys).lazy(), on=keys, how="anti").collect())
+    out = []
+    for m, res in enumerate(results):
+        t = table.with_columns(pl.Series(f"re_{name}", draws[m]),
+                               pl.Series(f"sd_{name}", sds[m]))
+        if new is not None and new.height:
+            z = rng.standard_normal(new.height) * taus[m]
+            add = new.with_columns(pl.Series(f"re_{name}", z),
+                                   pl.Series(f"sd_{name}", np.full(new.height, taus[m])),
+                                   pl.lit(0, dtype=t.schema["n_obs"]).alias("n_obs"))
+            add = add.with_columns(pl.col(c).cast(t.schema[c]) for c in keys)
+            t = pl.concat([t, add.select(t.columns)])
+        s = dict(res._spec)
+        s["ranef_base"] = base
+        s["ranef"] = {name: t}
+        s["effects"] = ([e for e in spec["effects"] if e[2] != "random"]
+                        + [(name, [f"re_{name}"], "random")])
+        s["ranef_drawn"] = True
+        diag = dict(res.diagnostics or {})
+        diag["ranef_mean"] = means[m]
+        out.append(replace(res, diagnostics=diag, _spec=s))
+    return out
+
+
+def _probit(u):
+    from scipy.special import ndtri
+    return ndtri(np.clip(u, 1e-16, 1 - 1e-16))

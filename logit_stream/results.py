@@ -224,9 +224,9 @@ class LogitResult(RegressionResult):
         the grouping, needed when there are several."""
         if not self.random_effects:
             raise KeyError("this model has no random intercepts")
-        if self._spec.get("draw_index") is not None:
+        if self._spec.get("draw_index") is not None and not self._spec.get("ranef_drawn"):
             raise ValueError("a parameter draw does not carry the group intercepts: draw them "
-                             "given the draw (see draw_parameters)")
+                             "given the draw (draw_ranef, or draw_parameters(ranef=True))")
         tables = self._spec["ranef"]
         if name is None:
             if len(tables) > 1:
@@ -237,7 +237,8 @@ class LogitResult(RegressionResult):
                            + ", ".join(map(repr, tables)))
         return tables[name].lazy()
 
-    def draw_parameters(self, n: int, seed: Any = None) -> list:
+    def draw_parameters(self, n: int, seed: Any = None, ranef: bool = False,
+                        newdata: Any = None) -> list:
         """`n` independent draws of the parameters from their estimated
         sampling distribution (the normal approximation: the estimates as
         the mean, their variance as the variance), each returned as a copy
@@ -261,9 +262,48 @@ class LogitResult(RegressionResult):
         Available without a fixed effect, with one absorbed fixed effect,
         and with an adaptive random intercept; not with the Laplace or
         joint-mode random intercepts, several fixed effects, the mixed or
-        nested logit. `seed`: an int, None or a `numpy.random.Generator`."""
-        from .draws import draw
-        return draw(self, n, seed)
+        nested logit. `seed`: an int, None or a `numpy.random.Generator`.
+
+        With ``ranef=True`` (binary and ordered models with a random
+        intercept), each draw also carries a draw of every group's intercept
+        given the group's rows and that draw's parameters, as `draw_ranef`
+        makes them, all `n` from one read of the estimation sample; then
+        each draw's `predict` includes them and `ranef()` returns them.
+        `newdata`: as for `draw_ranef`."""
+        from .draws import draw, draw_ranef_many
+        rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+        out = draw(self, n, rng)
+        if ranef:
+            out = draw_ranef_many(out, rng, newdata)
+        elif newdata is not None:
+            raise ValueError("newdata= is for ranef=True")
+        return out
+
+    def draw_ranef(self, seed: Any = None, newdata: Any = None):
+        """A copy of this result with one draw of every group's random
+        intercept from its conditional distribution: given the group's rows
+        in the estimation sample and this result's parameters (the
+        estimates, or a draw from `draw_parameters`),
+
+            p(d_g | rows) proportional to prod_i P(y_i | eta_i + d_g)^w_i N(d_g; 0, sd^2),
+
+        with eta_i each row's own linear predictor without the group's
+        intercept. Each group's draw is exact (on a grid of the density
+        around its mode, sampled by its inverse cdf), whatever its size or
+        how unbalanced its outcomes. The copy's `ranef()` holds the draws
+        (``re_<grouping>``) and each group's conditional sd at these
+        parameters (``sd_<grouping>``); its `predict` adds them, so its
+        predictions for a group's other members (those to impute, say) use
+        one shared draw per group. `newdata`: rows (or just the grouping's
+        columns) whose groups the fit did not see; each such group gets a
+        draw from N(0, sd^2), so that `predict` on them shares it too.
+
+        Reads the estimation sample once (from the fit's source), sorted by
+        group. For several imputations, ``draw_parameters(n, ranef=True)``
+        draws all of them in that one read. Available for the binary and
+        ordered logit and probit with one random grouping."""
+        from .draws import draw_ranef_many
+        return draw_ranef_many([self], seed, newdata)[0]
 
     def varcorr(self) -> pl.DataFrame:
         """The random intercepts' standard deviations and correlations, one
