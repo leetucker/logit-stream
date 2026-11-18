@@ -139,9 +139,6 @@ def test_refusals():
     with pytest.raises(ValueError, match="iid"):
         mlogit_stream("y ~ x", df, random="g", random_method="adaptive",
                       vcov={"CRV1": "g"}, verbose=False)
-    fit = mlogit_stream("y ~ x", df, random="g", random_method="adaptive", verbose=False)
-    with pytest.raises(ValueError, match="multinomial"):
-        fit.draw_parameters(2)
 
 
 def test_large_groups_take_the_smaller_rule(monkeypatch):

@@ -29,12 +29,19 @@ Three cases:
   group intercepts are not drawn: given a draw, each group's intercept has a
   conditional distribution given its rows, which the caller draws from (the
   drawn result's `predict` leaves them out).
+* the multinomial logit's random intercepts fitted by adaptive quadrature:
+  (coefficients, Sigma's log-Cholesky elements) jointly, from the inverse
+  of the information in (coefficients, Sigma^-1) carried over by its
+  Jacobian, then each fixed-effect level given them (linear in the drawn
+  values). A draw of Sigma^-1 itself can be near singular, which gives
+  Sigma a heavy tail; the log-Cholesky scale cannot.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
+import numba as nb
 import numpy as np
 import polars as pl
 
@@ -106,6 +113,72 @@ def adaptive_draw_info(ad, E, b, alpha, nu, nu_free):
     return out
 
 
+def adaptive_mnl_draw_info(fit, E, b, alpha, lam):
+    """What the multinomial adaptive fit (`_AdaptiveMNL`) keeps for the
+    draws: the covariance of (b, lambda) net of the fixed effect (lambda
+    Sigma^-1's elements), and each fixed-effect level's conditional
+    covariance and its cross terms with them."""
+    sysm = fit._system(E)
+    if sysm is None:
+        return {"kind": None, "why": "the fixed effect's information is not positive"}
+    A, _, JaE, Dinv, free = sysm
+    from .newton import _Driver
+    # the draws are of (b, psi), psi Sigma's log-Cholesky elements (always a valid
+    # Sigma, without the heavy tail that Sigma = Lambda^-1 has when a draw of Lambda
+    # is near singular); their covariance from (b, lambda)'s by the Jacobian
+    own, d, P = list(fit.own), fit.d, fit.m.P
+    lam = np.asarray(lam, float)
+    psi = _psi_of_lam(lam, own, d)
+    Jac = np.empty((len(lam), len(lam)))
+    for i in range(len(lam)):
+        h = 1e-6 * max(abs(lam[i]), 1.0)
+        e = np.zeros(len(lam))
+        e[i] = h
+        Jac[:, i] = (_psi_of_lam(lam + e, own, d) - _psi_of_lam(lam - e, own, d)) / (2 * h)
+    T = np.eye(P + len(lam))
+    T[P:, P:] = Jac
+    V = _Driver.inverse(A)
+    out = {"kind": "adaptive_mnl", "theta": np.r_[b, lam], "psi": np.r_[b, psi],
+           "V": T @ V @ T.T, "P": P, "own": own, "d": d, "alpha": None}
+    if alpha is not None:
+        G, J = free.shape
+        gb = G * J * (J + A.shape[0] + 2) * 8 / 1e9
+        if gb > DRAW_INFO_GB:
+            return {"kind": None, "why": _too_big(gb)}
+        Dm = np.where(free[:, :, None] & free[:, None, :], Dinv, 0.0)
+        # the levels' conditional mean, linear in (b, psi): the same variance as in
+        # (b, lambda) (the map is invertible), and it is what the draws use
+        M = np.einsum("gab,gbe->gae", Dm, JaE) @ np.linalg.inv(T)
+        out.update(alpha=np.asarray(alpha, float).copy(), free=free,
+                   M=M, S=_batched_factor(Dm),
+                   keep=np.asarray(fit.fe.keep, bool))
+    return out
+
+
+def _lam_matrix(lam, own, d):
+    L = np.zeros((d, d))
+    for x, (j, k) in zip(lam, own):
+        L[j, k] = L[k, j] = x
+    return L
+
+
+def _psi_of_lam(lam, own, d):
+    """Sigma's log-Cholesky elements, in the order of `own` ((j, j): log
+    L_jj; (j, k), j < k: L_kj), from Lambda = Sigma^-1's."""
+    C = np.linalg.cholesky(np.linalg.inv(_lam_matrix(lam, own, d)))
+    return np.array([np.log(C[j, j]) if j == k else C[k, j] for j, k in own])
+
+
+def _sigma_of_psi(psi, own, d):
+    C = np.zeros((d, d))
+    for x, (j, k) in zip(psi, own):
+        if j == k:
+            C[j, j] = np.exp(x)
+        else:
+            C[k, j] = x
+    return C @ C.T
+
+
 # ------------------------------------------------------------------ drawing
 def _fe_columns(spec):
     for name, values, kind in spec.get("effects", []):
@@ -132,8 +205,15 @@ def level_se(result):
     given the coefficients plus what the coefficients' uncertainty adds,
     var(a_g) = D_g^-1 + (D_g^-1 J_g') V (J_g D_g^-1); None when not kept."""
     info = (result._spec or {}).get("draw")
-    if not info or info.get("kind") not in ("fe", "adaptive"):
+    if not info or info.get("kind") not in ("fe", "adaptive", "adaptive_mnl"):
         return None
+    if info["kind"] == "adaptive_mnl":
+        if info["alpha"] is None:
+            return None
+        S, M = info["S"], info["M"]
+        var = (np.einsum("gjk,gjk->gj", S, S)
+               + np.einsum("gjp,pq,gjq->gj", M, info["V"], M))
+        return np.sqrt(np.where(info["free"], var, np.nan))[info["keep"]]
     if info["kind"] == "fe":
         c = _iid_factor(result, info)
         S = info["S"]
@@ -176,7 +256,21 @@ def draw(result, n, seed=None):
     L = _factor(result.vcov if kind in ("beta", "fe") else info["V"])
     for i in range(n):
         tau = None
+        Sigma = None
         levels = None
+        if kind == "adaptive_mnl":
+            d, own = info["d"], info["own"]
+            ps = info["psi"] + L @ rng.standard_normal(len(info["psi"]))
+            beta = ps[:P]
+            Sigma = _sigma_of_psi(ps[P:], own, d)
+            if info["alpha"] is not None:
+                A = info["alpha"] - info["M"] @ (ps - info["psi"])
+                z = rng.standard_normal(A.shape)
+                A = A + (info["S"] @ z[..., None])[..., 0]
+                A = np.where(info["free"], A, info["alpha"])
+                levels = A[info["keep"]]
+            out.append(_drawn(result, spec, i, beta, levels, None, fname, fcols, Sigma))
+            continue
         if kind in ("beta", "fe"):
             beta = beta_hat + L @ rng.standard_normal(P)
             if kind == "fe":
@@ -207,7 +301,7 @@ def draw(result, n, seed=None):
     return out
 
 
-def _drawn(result, spec, i, beta, levels, tau, fname, fcols):
+def _drawn(result, spec, i, beta, levels, tau, fname, fcols, Sigma=None):
     s = dict(spec)
     s["draw_index"] = i
     s.pop("draw", None)
@@ -229,6 +323,10 @@ def _drawn(result, spec, i, beta, levels, tau, fname, fcols):
             (name,) = re
             re[name]["sd"] = np.array([tau])
             re[name]["Sigma"] = np.array([[tau * tau]])
+        if Sigma is not None:
+            (name,) = re
+            re[name]["Sigma"] = Sigma
+            re[name]["sd"] = np.sqrt(np.diag(Sigma))
     diag = dict(result.diagnostics or {})
     diag["draw"] = i
     return replace(result, beta=np.asarray(beta, float), random_effects=re, diagnostics=diag,
@@ -248,15 +346,19 @@ def _ranef_setup(result):
     re = result.random_effects
     if not re:
         raise ValueError("draw_ranef needs a model with random intercepts (random=)")
-    if isinstance(result, MultinomialLogitResult) or not isinstance(result,
-                                                                    OrderedLogitResult):
-        raise ValueError("draw_ranef is available for the binary and ordered logit and probit "
-                         "(one scalar random intercept); not for the multinomial logit yet")
+    mnl = isinstance(result, MultinomialLogitResult)
+    if not (mnl or isinstance(result, OrderedLogitResult)):
+        raise ValueError("draw_ranef is available for the binary, ordered and multinomial logit "
+                         "and probit")
+    if mnl and (result._spec or {}).get("free") is not None:
+        raise ValueError("draw_ranef is not available with own_covariates=")
     if len(re) != 1:
         raise ValueError(f"draw_ranef needs one random grouping, not {len(re)} ({list(re)})")
     (name,) = re
     if re[name].get("structure") not in (None, "tree"):
         raise ValueError("draw_ranef needs nested (not crossed) groupings")
+    if mnl:
+        return name, list(result._spec["fe_cols"][name]), None
     from .models import LINKS
     return name, list(result._spec["fe_cols"][name]), LINKS[result.link]
 
@@ -395,6 +497,8 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     first = results[0]
     name, keys, link = _ranef_setup(first)
     rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+    if link is None:
+        return _draw_ranef_many_mnl(results, rng, newdata, name, keys, chunk_cells)
     spec = first._spec
     base = spec.get("ranef_base") or spec["ranef"]
     table = base[name]
@@ -405,13 +509,8 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     draws, means, sds = np.zeros((M, G)), np.zeros((M, G)), np.zeros((M, G))
     seen = np.zeros(G, bool)
     lf, k, fname = _ranef_rows(first, name, keys)
-    wscale = 1.0
-    if first.weights and first.weights_type != "fweights":
-        st = first._spec["source"].filter(spec["usable"]).select(
-            pl.len().alias("n"), pl.col(first.weights).sum().alias("w")).collect()
-        wscale = float(st["n"][0]) / float(st["w"][0])
+    wscale = _weight_scale(first)
     rows_per_chunk = max(int(chunk_cells // RANEF_GRID), 1000)
-    carry = None
 
     def process(df):
         gi = df["__g"].to_numpy()
@@ -430,19 +529,7 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
             draws[m, gid], means[m, gid], sds[m, gid] = dm, mu, sd
         seen[gid] = True
 
-    for batch in lf.collect_batches(chunk_size=rows_per_chunk):
-        if carry is not None:
-            batch = pl.concat([carry, batch])
-        if batch.height == 0:
-            continue
-        last = batch["__g"][-1]
-        tail = batch["__g"] == last
-        carry = batch.filter(tail)
-        body = batch.filter(~tail)
-        if body.height:
-            process(body)
-    if carry is not None and carry.height:
-        process(carry)
+    _by_whole_groups(lf, rows_per_chunk, process)
     # a group without rows (all its weights zero, say): its prior
     for m in range(M):
         miss = ~seen
@@ -476,6 +563,316 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     return out
 
 
+def _by_whole_groups(lf, rows_per_chunk, process):
+    """Stream `lf` (sorted by `__g`) in batches, calling `process` on whole
+    groups only (a batch's last group waits for the next batch)."""
+    carry = None
+    for batch in lf.collect_batches(chunk_size=rows_per_chunk):
+        if carry is not None:
+            batch = pl.concat([carry, batch])
+        if batch.height == 0:
+            continue
+        last = batch["__g"][-1]
+        tail = batch["__g"] == last
+        carry = batch.filter(tail)
+        body = batch.filter(~tail)
+        if body.height:
+            process(body)
+    if carry is not None and carry.height:
+        process(carry)
+
+
+def _weight_scale(first):
+    """Analytic weights rescaled to a mean of one over the usable rows."""
+    if first.weights and first.weights_type != "fweights":
+        st = first._spec["source"].filter(first._spec["usable"]).select(
+            pl.len().alias("n"), pl.col(first.weights).sum().alias("w")).collect()
+        return float(st["n"][0]) / float(st["w"][0])
+    return 1.0
+
+
+def _draw_ranef_many_mnl(results, rng, newdata, name, keys, chunk_cells):
+    """`draw_ranef_many` for the multinomial logit: each group's (J - 1)
+    intercepts by importance resampling (`_mnl_sir_kernel`)."""
+    first = results[0]
+    spec = first._spec
+    base = spec.get("ranef_base") or spec["ranef"]
+    table = base[name]
+    G = table.height
+    M = len(results)
+    levels = list(first.levels)
+    d = len(levels) - 1
+    Sigmas = [np.asarray(r.random_effects[name]["Sigma"], float) for r in results]
+    Lams = [np.linalg.inv(S) for S in Sigmas]
+    keys64 = rng.integers(0, 2**63, M)
+    draws, means, sds = np.zeros((M, G, d)), np.zeros((M, G, d)), np.zeros((M, G, d))
+    ess = np.full((M, G), np.nan)
+    seen = np.zeros(G, bool)
+    lf, k, fname = _ranef_rows(first, name, keys)
+    wscale = _weight_scale(first)
+    rows_per_chunk = max(int(chunk_cells // MNL_CANDIDATES), 1000)
+
+    def process(df):
+        gi = df["__g"].to_numpy()
+        starts = np.flatnonzero(np.r_[True, gi[1:] != gi[:-1]])
+        gid = gi[starts]
+        y = df["__y"].to_numpy()
+        w = df["__w"].to_numpy() * wscale if "__w" in df.columns else np.ones(len(gi))
+        X = (df.select([f"__x{j}" for j in range(k)]).to_numpy().astype(float) if k
+             else np.zeros((len(gi), 0)))
+        f = df["__f"].to_numpy() if fname else None
+        st = np.r_[starts, len(gi)]
+        for m, res in enumerate(results):
+            E = _mnl_location(res, X, f, fname)
+            dm, mu, sd, es = _mnl_draw(E, y, w, st, gid, Lams[m], int(keys64[m]))
+            draws[m, gid], means[m, gid], sds[m, gid], ess[m, gid] = dm, mu, sd, es
+        seen[gid] = True
+
+    _by_whole_groups(lf, rows_per_chunk, process)
+    for m in range(M):            # a group without rows: its prior
+        miss = np.flatnonzero(~seen)
+        if len(miss):
+            C = np.linalg.cholesky(Sigmas[m])
+            draws[m, miss] = rng.standard_normal((len(miss), d)) @ C.T
+            sds[m, miss] = np.sqrt(np.diag(Sigmas[m]))
+    new = None
+    if newdata is not None:
+        from .results import as_lazy as _lazy
+        new = (_lazy(newdata).select(keys).unique(maintain_order=True)
+               .join(table.select(keys).lazy(), on=keys, how="anti").collect())
+    rcols = [f"re_{name}:{lv}" for lv in levels]
+    scols = [f"sd_{name}:{lv}" for lv in levels]
+    out = []
+    for m, res in enumerate(results):
+        def cols(Dr, Sd):
+            n = Dr.shape[0]
+            return ([pl.Series(rcols[0], np.zeros(n))]
+                    + [pl.Series(rcols[j + 1], Dr[:, j]) for j in range(d)]
+                    + [pl.Series(scols[0], np.zeros(n))]
+                    + [pl.Series(scols[j + 1], Sd[:, j]) for j in range(d)])
+        t = table.with_columns(cols(draws[m], sds[m]))
+        if new is not None and new.height:
+            C = np.linalg.cholesky(Sigmas[m])
+            z = rng.standard_normal((new.height, d)) @ C.T
+            sdp = np.tile(np.sqrt(np.diag(Sigmas[m])), (new.height, 1))
+            add = new.with_columns(cols(z, sdp)).with_columns(
+                pl.lit(0, dtype=t.schema["n_obs"]).alias("n_obs"))
+            add = add.with_columns(pl.col(c).cast(t.schema[c]) for c in keys)
+            t = pl.concat([t, add.select(t.columns)])
+        s = dict(res._spec)
+        s["ranef_base"] = base
+        s["ranef"] = {name: t}
+        s["effects"] = ([e for e in spec["effects"] if e[2] != "random"]
+                        + [(name, rcols, "random")])
+        s["ranef_drawn"] = True
+        diag = dict(res.diagnostics or {})
+        diag["ranef_mean"] = means[m]
+        diag["ranef_ess"] = ess[m]
+        out.append(replace(res, diagnostics=diag, _spec=s))
+    return out
+
+
 def _probit(u):
     from scipy.special import ndtri
     return ndtri(np.clip(u, 1e-16, 1 - 1e-16))
+
+
+# ------------------------------------------------------------------ multinomial intercepts
+MNL_CANDIDATES = 1000       # the importance-resampling candidates per group and draw
+MNL_ESS_MIN = 200           # fewer effective candidates: the group is redone with 16x
+MNL_T_DF = 5                # the proposal's degrees of freedom
+_M64 = (1 << 64) - 1
+
+
+@nb.njit(cache=True, inline="always")
+def _mix(x):
+    """splitmix64's finalizer: a counter to 64 well-mixed bits."""
+    x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return x ^ (x >> np.uint64(31))
+
+
+@nb.njit(cache=True, inline="always")
+def _uniform(key, g, c):
+    """A uniform on (0, 1) from (key, group, counter)."""
+    x = _mix(key ^ _mix(np.uint64(g) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(c)))
+    return (np.float64(x >> np.uint64(11)) + 0.5) * (1.0 / 9007199254740992.0)
+
+
+@nb.njit(cache=True)
+def _mnl_logpost(E0, y, w, r0, r1, a, Lam):
+    """A group's log posterior density at a (up to a constant)."""
+    J = E0.shape[1]
+    d = J - 1
+    lp = 0.0
+    for i in range(r0, r1):
+        mx = E0[i, 0]
+        for j in range(1, J):
+            if E0[i, j] + a[j - 1] > mx:
+                mx = E0[i, j] + a[j - 1]
+        den = 0.0
+        for j in range(J):
+            den += np.exp(E0[i, j] + (a[j - 1] if j > 0 else 0.0) - mx)
+        ey = E0[i, y[i]] + (a[y[i] - 1] if y[i] > 0 else 0.0)
+        lp += w[i] * (ey - mx - np.log(den))
+    q = 0.0
+    for j in range(d):
+        for k in range(d):
+            q += a[j] * Lam[j, k] * a[k]
+    return lp - 0.5 * q
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _mnl_sir_kernel(E0, y, w, st, gid, Lam, key, n_cand, nu, draw, mean, sd, ess):
+    """Each group's draw of its intercepts (levels 1..J-1) from
+    p(a | rows) proportional to prod_i P(y_i | eta_i + a)^w_i N(a; 0, Lam^-1),
+    by importance resampling: Newton for the mode, `n_cand` candidates from
+    a multivariate t (`nu` degrees of freedom) at the mode with the inverse
+    curvature as its scale, one picked by its weight. The random numbers
+    are a hash of (key, the group's id, a counter), so they do not depend on
+    how the rows are read. Also each group's weighted mean, sd and the
+    weights' effective number."""
+    G = len(gid)
+    J = E0.shape[1]
+    d = J - 1
+    for g in nb.prange(G):
+        r0, r1 = st[g], st[g + 1]
+        a = np.zeros(d)
+        H = np.zeros((d, d))
+        p = np.empty(J)
+        for _ in range(100):
+            s = -(Lam @ a)
+            H[:, :] = Lam
+            for i in range(r0, r1):
+                mx = E0[i, 0]
+                for j in range(1, J):
+                    if E0[i, j] + a[j - 1] > mx:
+                        mx = E0[i, j] + a[j - 1]
+                den = 0.0
+                for j in range(J):
+                    p[j] = np.exp(E0[i, j] + (a[j - 1] if j > 0 else 0.0) - mx)
+                    den += p[j]
+                for j in range(J):
+                    p[j] /= den
+                for j in range(d):
+                    s[j] += w[i] * ((1.0 if y[i] == j + 1 else 0.0) - p[j + 1])
+                    H[j, j] += w[i] * p[j + 1]
+                    for k in range(d):
+                        H[j, k] -= w[i] * p[j + 1] * p[k + 1]
+            step = np.linalg.solve(H, s)
+            big = 0.0
+            for j in range(d):
+                big = max(big, abs(step[j]))
+            if big > 2.0:
+                step *= 2.0 / big
+            a += step
+            if big < 1e-10:
+                break
+        V = np.linalg.inv(H)
+        R = np.linalg.cholesky((V + V.T) / 2)
+        # the candidates
+        lw = np.empty(n_cand)
+        cand = np.empty((n_cand, d))
+        z = np.empty(d)
+        cnt = 0
+        for k in range(n_cand):
+            # d + nu normals by Box-Muller, the last nu for the chi-square
+            nz = d + nu
+            zz = np.empty(nz + 1)
+            for t in range(0, nz, 2):
+                u1 = _uniform(key, gid[g], cnt)
+                u2 = _uniform(key, gid[g], cnt + 1)
+                cnt += 2
+                rr = np.sqrt(-2.0 * np.log(u1))
+                zz[t] = rr * np.cos(2 * np.pi * u2)
+                zz[t + 1] = rr * np.sin(2 * np.pi * u2)
+            c2 = 0.0
+            for t in range(d, nz):
+                c2 += zz[t] * zz[t]
+            sc = np.sqrt(nu / c2)
+            q = 0.0
+            for j in range(d):
+                z[j] = zz[j] * sc
+                q += z[j] * z[j]
+            for j in range(d):
+                x = a[j]
+                for l in range(j + 1):
+                    x += R[j, l] * z[l]
+                cand[k, j] = x
+            lw[k] = (_mnl_logpost(E0, y, w, r0, r1, cand[k], Lam)
+                     + 0.5 * (nu + d) * np.log1p(q / nu))
+        mxw = lw.max()
+        tot, tot2 = 0.0, 0.0
+        for k in range(n_cand):
+            lw[k] = np.exp(lw[k] - mxw)
+            tot += lw[k]
+            tot2 += lw[k] * lw[k]
+        ess[g] = tot * tot / tot2
+        for j in range(d):
+            m1, m2 = 0.0, 0.0
+            for k in range(n_cand):
+                m1 += lw[k] * cand[k, j]
+                m2 += lw[k] * cand[k, j] * cand[k, j]
+            m1 /= tot
+            mean[g, j] = m1
+            sd[g, j] = np.sqrt(max(m2 / tot - m1 * m1, 0.0))
+        u = _uniform(key, gid[g], cnt) * tot
+        acc = 0.0
+        pick = n_cand - 1
+        for k in range(n_cand):
+            acc += lw[k]
+            if acc >= u:
+                pick = k
+                break
+        for j in range(d):
+            draw[g, j] = cand[pick, j]
+
+
+def _mnl_location(res, X, f, fname):
+    """The rows' linear predictors (n x J, the base level's 0) without the
+    group intercepts at `res`'s parameters; a level that a fixed-effect
+    level never has is at -inf."""
+    levels = list(res.levels)
+    J = len(levels)
+    names = list(res.coefnames)
+    pos = {nm: i for i, nm in enumerate(names)}
+    xn = list(res._spec["xcols"])
+    beta = np.asarray(res.beta, float)
+    E = np.zeros((X.shape[0], J))
+    for j, lv in enumerate(levels[1:], start=1):
+        k = 0
+        for nm in xn:
+            if nm == "Intercept":
+                E[:, j] += beta[pos[f"{lv}:Intercept"]]
+            else:
+                E[:, j] += X[:, k] * beta[pos[f"{lv}:{nm}"]]
+                k += 1
+    if fname:
+        t = res._spec["fixef"][fname]
+        Af = np.column_stack([t[f"fe_{fname}:{lv}"].fill_null(float("-inf")).to_numpy()
+                              .astype(float) for lv in levels])
+        E += Af[f]
+    return E
+
+
+def _mnl_draw(E, y, w, st, gid, Lam, key):
+    n = len(gid)
+    d = Lam.shape[0]
+    draw, mean, sd, ess = (np.empty((n, d)), np.empty((n, d)), np.empty((n, d)),
+                           np.empty(n))
+    args = (np.ascontiguousarray(E), y.astype(np.int64), np.ascontiguousarray(w, float),
+            st.astype(np.int64), gid.astype(np.int64), np.ascontiguousarray(Lam))
+    _mnl_sir_kernel(*args, np.uint64(key), MNL_CANDIDATES, MNL_T_DF, draw, mean, sd, ess)
+    low = np.flatnonzero(ess < MNL_ESS_MIN)
+    if len(low):
+        # these groups again, with 16x the candidates (and new ones)
+        rows = np.concatenate([np.arange(st[g], st[g + 1]) for g in low])
+        st2 = np.r_[0, np.cumsum(st[low + 1] - st[low])]
+        d2, m2, s2, e2 = (np.empty((len(low), d)), np.empty((len(low), d)),
+                          np.empty((len(low), d)), np.empty(len(low)))
+        _mnl_sir_kernel(np.ascontiguousarray(E[rows]), args[1][rows], args[2][rows],
+                        st2.astype(np.int64), args[4][low], args[5],
+                        np.uint64(key ^ 0x5BD1E995), 16 * MNL_CANDIDATES, MNL_T_DF, d2, m2,
+                        s2, e2)
+        draw[low], mean[low], sd[low], ess[low] = d2, m2, s2, e2
+    return draw, mean, sd, ess

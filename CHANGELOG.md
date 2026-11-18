@@ -19,9 +19,8 @@ New
   and three rows per group in a simulation, it put the common levels' variances about a fifth
   too low, the rarest level's twice too high, and the correlations 40% too low. The adaptive
   fit agrees with brute-force maximum likelihood (estimates to 3e-3, standard errors of the
-  coefficients and of Sigma to 3%). It takes about 1.6 times the Laplace fit's time at J = 5 (a numba kernel per group), and
-  `draw_parameters` / `draw_ranef` are not yet available for it. `random_nodes` now defaults to
-  the method's own value.
+  coefficients and of Sigma to 3%). It takes about 1.6 times the Laplace fit's time at J = 5 (a numba kernel per group).
+  `random_nodes` now defaults to the method's own value.
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
   engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
   variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.
@@ -40,7 +39,9 @@ New
   result's `ranef()` holds the draws and `predict` adds them. `newdata=` gives groups the fit did
   not see a draw from N(0, sd^2). With `draw_parameters(n, ranef=True)`, all n draws come from one
   read of the estimation sample (sorted by group, in batches of whole groups). Available for the
-  binary and ordered logit and probit with one random grouping; not yet for the multinomial logit.
+  binary, ordered and multinomial logit and probit with one random grouping. For the multinomial
+  logit, each group's J - 1 intercepts are drawn jointly by importance resampling around its
+  mode, and `draw_parameters` (adaptive fits) draws Sigma on its log-Cholesky scale.
 - **`fixef()` has standard errors** (`se_<name>`, or `se_<name>:<level>`) where
   `draw_parameters` is available: each level's variance given the coefficients, plus what the
   coefficients' uncertainty adds.

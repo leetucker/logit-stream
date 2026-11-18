@@ -280,8 +280,9 @@ points per dimension (81). The fit took about 1.6 times the Laplace fit's
 time in the simulation above (84 s against 51 s for 60,000 rows). The
 tests check it against brute-force integration for J = 3, with and without
 a fixed effect: the estimates to 3e-3, the coefficients' and $\Sigma$'s
-standard errors to 3%. `draw_parameters` and `draw_ranef` are not yet
-available for it. See `logit_stream.random_effects.adaptive_mnl`.
+standard errors to 3%. `draw_parameters` and `draw_ranef` work with it
+(see [Multiple imputation](multiple_imputation.md)). See
+`logit_stream.random_effects.adaptive_mnl`.
 
 **Conditional sds.** `ranef()` gives each group's effect (its conditional
 mode) and, in `sd_<grouping>` (`sd_<grouping>:<level>` for the multinomial

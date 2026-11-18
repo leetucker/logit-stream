@@ -264,8 +264,12 @@ class LogitResult(RegressionResult):
         joint-mode random intercepts, several fixed effects, the mixed or
         nested logit. `seed`: an int, None or a `numpy.random.Generator`.
 
-        With ``ranef=True`` (binary and ordered models with a random
-        intercept), each draw also carries a draw of every group's intercept
+        For the multinomial logit's random intercepts (adaptive fit), Sigma
+        is drawn on the scale of its log-Cholesky factor, carried over from
+        the information by the delta method, so every draw is a valid
+        covariance matrix.
+
+        With ``ranef=True`` (a model with one random grouping), each draw also carries a draw of every group's intercept
         given the group's rows and that draw's parameters, as `draw_ranef`
         makes them, all `n` from one read of the estimation sample; then
         each draw's `predict` includes them and `ranef()` returns them.
@@ -300,8 +304,17 @@ class LogitResult(RegressionResult):
 
         Reads the estimation sample once (from the fit's source), sorted by
         group. For several imputations, ``draw_parameters(n, ranef=True)``
-        draws all of them in that one read. Available for the binary and
-        ordered logit and probit with one random grouping."""
+        draws all of them in that one read. Available for the binary,
+        ordered and multinomial logit (and probit) with one random grouping.
+
+        For the multinomial logit each group's J - 1 intercepts are drawn
+        jointly from N(0, Sigma) times its rows' probabilities, by
+        importance resampling: from the mode (Newton's method) and the
+        inverse curvature there, 1,000 candidates from a multivariate t
+        with 5 degrees of freedom, one picked in proportion to its weight
+        (exact as the candidates grow; a group whose weights' effective
+        number is under 200 is redone with 16 times as many). The copy's
+        ``diagnostics["ranef_ess"]`` has each group's effective number."""
         from .draws import draw_ranef_many
         return draw_ranef_many([self], seed, newdata)[0]
 

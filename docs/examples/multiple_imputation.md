@@ -105,9 +105,22 @@ share female among the unknown: truth 0.4431, imputed 0.4442 (between-imputation
 a single draw. `draw_parameters` works for models without fixed effects
 (from `vcov`, whichever type it is), with one absorbed fixed effect, and
 with a random intercept fitted by `random_method="adaptive"`. The firm
-intercepts (`ranef=True`, `draw_ranef`) are available for the binary and
-ordered logit and probit with one random grouping. They are not yet
-available for the multinomial logit.
+intercepts (`ranef=True`, `draw_ranef`) are available for the binary,
+ordered and multinomial logit and probit with one random grouping.
+
+**A multinomial characteristic.** With `mlogit_stream(...,
+random_method="adaptive")`, a draw covers the coefficients, $\Sigma$ and
+the cell effects of every level jointly, and `ranef=True` draws each
+firm's J - 1 intercepts together, from their joint distribution given the
+firm's known workers. A firm's draws therefore keep the correlations
+between its levels that $\Sigma$ implies. The parameter draws take
+$\Sigma$ on the scale of its log-Cholesky factor, so every draw is a valid
+covariance matrix. The firm draws are by importance resampling around
+each firm's mode (1,000 candidates from a multivariate t; see
+`draw_ranef`). With J = 5, 20,000 firms and 60,000 known workers, ten
+draws of everything took 16 seconds, against 92 for the fit. The
+imputation is then `predict(type="response")`, giving `prob_<level>`
+columns, and a categorical draw from them per worker.
 
 ## Checks of the draws
 
@@ -123,6 +136,13 @@ references:
   under brute force's cdf is uniform, for binary and ordered outcomes, for
   firms of one to 400 rows, and for firms whose rows all share one
   outcome.
+- **Multinomial firm intercepts (J = 3):** each firm's conditional means
+  and sds match a brute-force 2-D grid to within their Monte Carlo error.
+  The probability integral transforms of each intercept, and of their sum,
+  are uniform.
+- **Multinomial parameter draws:** the coefficients' covariance matches
+  `vcov`, $\Sigma$'s spread matches its standard errors, and the cell
+  effects' spread matches their `fixef()` standard errors.
 
 In 60 simulated data sets (50 cells, about 50,000 rows), the cell effects'
 standard errors were calibrated: across 3,000 cell estimates, the

@@ -13,7 +13,7 @@ from scipy.special import expit
 from test_random_adaptive import _small
 
 from logit_stream import draws as D
-from logit_stream import logit_stream, mlogit_stream, ologit_stream
+from logit_stream import logit_stream, ologit_stream
 
 _Z = np.linspace(-1, 1, 8001)
 
@@ -148,9 +148,6 @@ def test_refusals():
     df = _small(2, seed=1)
     with pytest.raises(ValueError, match="random intercepts"):
         logit_stream("y ~ x1 + x2", df, verbose=False).draw_ranef()
-    m = mlogit_stream("y ~ x1 + x2", _small(4, seed=1), random="g", verbose=False)
-    with pytest.raises(ValueError, match="multinomial"):
-        m.draw_ranef()
     f = logit_stream("y ~ x1 + x2", df, random="g", random_method="adaptive", verbose=False)
     with pytest.raises(ValueError, match="ranef=True"):
         f.draw_parameters(2, newdata=df)

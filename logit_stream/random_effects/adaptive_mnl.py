@@ -672,7 +672,8 @@ def _fit_adaptive_mnl(driver, re, fit, re_info, fml, tol, n_nodes, log, logger):
     re.sd_override = [np.where(f.keep[:, None], sd, np.nan)]
     re.adaptive_V = res["Vb_cond"]
     re.method = "adaptive"
-    re.draw_info = {"kind": None, "why": "it is not yet available for the multinomial logit"}
+    from ..draws import adaptive_mnl_draw_info
+    re.draw_info = adaptive_mnl_draw_info(ims, res["E"], res["b"], res["alpha"], res["lam"])
     # from lambda (Sigma^-1's elements) to Sigma's: d Sigma = -Sigma dLambda Sigma
     T = -np.einsum("ab,pbc,cd->pad", S, Ep, S)
     T = np.array([[T[p, j, l] for p in range(len(own))] for j, l in own])     # d Sigma_q / d lam_p
