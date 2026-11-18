@@ -172,12 +172,87 @@ The test suite checks that the two give the same estimates, standard
 errors and log-likelihood, and that the conditional logit agrees with
 statsmodels' `ConditionalLogit`.
 
+## Absorbed alternative constants
+
+A constant for each level of a characteristic of the alternatives -- an
+establishment, a product, a destination -- is absorbed by naming it after
+`|`, as for the other models' fixed effects:
+
+```python
+fit = clogit_stream("chosen ~ dist | estab", jobs, case="worker")
+fit.fixef().head(3).collect()            # fe_estab, se_estab, n_obs, n_chosen
+```
+
+The constants vary across a choice set's alternatives, so they do not
+cancel, as a characteristic of the chooser would. This is the conditional
+logit that a Poisson regression with chooser and alternative fixed effects
+reproduces, fitted as the conditional logit. More than one dimension is
+allowed (``| estab + county_sex``); with several, only the constants' sums
+are identified, and `fixef()` reports them as fitted.
+
+**How they are solved.** The constants' information couples two levels
+only when some choice set contains both. It is therefore block-diagonal
+over the groups of levels that the choice sets link, which the first pass
+finds from the data. With workers choosing among their firm's
+establishments the groups are the firms, without the firm being named. With
+`fe_solver="auto"` (the default) each group's block is dense, and Newton's
+steps eliminate the constants exactly, group by group, when the largest
+group has at most 5,000 levels and the blocks fit in memory. Otherwise
+`"contraction"` solves the constants by count matching (each level's
+predicted choices equal its observed ones) and the coefficients' information
+net of them by conjugate gradients, with no blocks. Both give the same
+estimates; the diagnostics' `alternative_constants` entry records which was
+used. With 4.1 million rows (324,000 workers, 30,000 establishments in 5,000
+firms, three of them with 150 establishments and 5,000 workers), the blocks
+took 8 seconds and the contraction 18.
+
+A level never chosen, or chosen in every set where it appears, has an
+infinite constant. It is dropped with its alternatives (and, for the second
+kind, its sets), with a warning. With one dimension each constant is
+reported relative to its group's reference level (the most chosen, at 0).
+Its standard error (`se_<name>`) is that of the difference, and
+`draw_parameters` draws the coefficients and every constant jointly. Both
+need one dimension and the blocks. Robust (``vcov="hetero"``) and clustered
+(``{"CRV1": "firm"}``) variances work with either solver and any number of
+dimensions. Each choice set's score for the coefficients is taken net of the
+constants, which gives the same standard errors as the dummy-coded fit's.
+
+**Calibrating to known totals.** `predict(..., calibrate={"estab": totals})`
+solves each establishment's constant from a known total instead: the one at
+which its predicted choices over `newdata`'s sets equal the total, given the
+coefficients. That is what imputation needs where the establishments are new
+(no workers of theirs were in the fit) but their employment is known. Each
+draw from `draw_parameters` calibrates under its own coefficients. Within
+each firm the totals are first scaled to its number of choice sets, with a
+warning if they differ by more than 1%. The calibration collects `newdata` in
+memory, since it needs all of a firm's rows at once. With 4.1 million rows (a
+99 MB frame) its peak was 0.8 GB, about 200 bytes per row.
+
+In a simulation (3,000 firms of 2 to 10 establishments and 5 to 150 workers
+in the fit, 1,000 new firms to impute, true distance coefficient -1.2), the
+two approaches compare as follows. In the first, the log of each
+establishment's share of its firm's workers is an offset, both in the fit
+and at imputation; in the second, the constants are absorbed and then
+calibrated:
+
+| | distance coefficient | mean commute (truth 1.797) | P(the true establishment) | workers placed against the totals |
+|---|---|---|---|---|
+| log-share offset | -1.012 | 1.805 | 0.445 | 18% misallocated |
+| constants + calibration | -1.231 | 1.800 | 0.470 | exact |
+
+The offset attenuates the coefficient by a sixth. Aggregate commutes barely
+change, but the establishments' totals do not hold. The absorbed
+constants' estimate is 2.5% too large: the maximum-likelihood estimate's
+own bias with about 13 workers per establishment, as with other fixed
+effects estimated from few observations each.
+
 ## Related models
 
 - **Nests of alternatives:** `nlogit_stream`, the [nested logit](nested.md).
 - **Coefficients that vary across choosers:** `mixlogit_stream`, the
   [mixed logit](mixed.md).
-- **Fixed effects** do not apply: a characteristic of the chooser cancels.
+- **Fixed effects of the chooser** do not apply: a characteristic of the
+  chooser cancels. Alternative constants do (above).
   For panels of binary outcomes, Chamberlain's conditional fixed-effects
   logit is `cfelogit_stream` (see [incidental
   parameters](incidental_parameters.md)).

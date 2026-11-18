@@ -165,7 +165,20 @@ _RANDOM = """
         The form of Sigma (multinomial; the ordered logit's is 1 x 1).
     random_tol : float, default 1e-6
         Convergence when an update changes Sigma by less than this,
-        relative to its largest element."""
+        relative to its largest element.
+    fe_solver : {"auto", "blocks", "contraction"}, default "auto"
+        For `clogit_stream` with absorbed alternative constants
+        (``"chosen ~ x | estab"``, one or more dimensions): how the
+        constants are solved. ``"blocks"``: exact Newton steps, with the
+        constants' information dense within each group of levels that the
+        choice sets link (with establishments chosen within firms, the
+        firms). ``"contraction"``: no blocks; the constants by count
+        matching and the coefficients' information net of them by
+        conjugate gradients. ``"auto"``: the blocks when the largest group
+        has at most 5,000 levels and they fit in memory. Both give the same
+        estimates. `draw_parameters` and the constants' standard errors
+        need one dimension and the blocks. See
+        `logit_stream.alt_fe`."""
 
 
 def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,

@@ -205,8 +205,23 @@ def level_se(result):
     given the coefficients plus what the coefficients' uncertainty adds,
     var(a_g) = D_g^-1 + (D_g^-1 J_g') V (J_g D_g^-1); None when not kept."""
     info = (result._spec or {}).get("draw")
-    if not info or info.get("kind") not in ("fe", "adaptive", "adaptive_mnl"):
+    if not info or info.get("kind") not in ("fe", "adaptive", "adaptive_mnl", "alt_fe"):
         return None
+    if info["kind"] == "alt_fe":
+        # each constant less its group's reference: (e_j - e_r)' (Dinv + BD V BD') (e_j - e_r)
+        ok, ref = info["alive"], info["ref"]
+        j = np.flatnonzero(ok)
+        r = ref[j]
+        c = info["comp"][j]
+        pos, s = info["comp_pos"][c], info["comp_size"][c]
+        lj, lr = info["loc"][j], info["loc"][r]
+        Di = info["Dinv"]
+        own = Di[pos + lj * s + lj] + Di[pos + lr * s + lr] - 2 * Di[pos + lj * s + lr]
+        dB = info["BD"][j] - info["BD"][r]
+        add = np.einsum("np,pq,nq->n", dB, np.asarray(result.vcov, float), dB)
+        var = np.full(len(ok), np.nan)
+        var[j] = np.where(j == r, np.nan, own + add)
+        return np.sqrt(np.clip(var, 0, None))[:, None]
     if info["kind"] == "adaptive_mnl":
         if info["alpha"] is None:
             return None
@@ -253,7 +268,7 @@ def draw(result, n, seed=None):
     fname, fcols = _fe_columns(spec)
     out = []
     c = _iid_factor(result, info)
-    L = _factor(result.vcov if kind in ("beta", "fe") else info["V"])
+    L = _factor(result.vcov if kind in ("beta", "fe", "alt_fe") else info["V"])
     for i in range(n):
         tau = None
         Sigma = None
@@ -270,6 +285,20 @@ def draw(result, n, seed=None):
                 A = np.where(info["free"], A, info["alpha"])
                 levels = A[info["keep"]]
             out.append(_drawn(result, spec, i, beta, levels, None, fname, fcols, Sigma))
+            continue
+        if kind == "alt_fe":
+            beta = beta_hat + L @ rng.standard_normal(P)
+            A = info["alpha"] - info["BD"] @ (beta - beta_hat)
+            z = rng.standard_normal(len(A))
+            S, order, start = info["S"], info["level_order"], info["comp_start"]
+            for s_, comps in info["by_size"]:
+                k = len(comps)
+                idx = info["comp_pos"][comps][:, None] + np.arange(s_ * s_)[None, :]
+                lv = order[start[comps][:, None] + np.arange(s_)[None, :]]
+                A[lv] += (S[idx].reshape(k, s_, s_) @ z[lv][..., None])[..., 0]
+            ok, ref = info["alive"], info["ref"]
+            A = np.where(ok, A - np.where(ok, A[np.maximum(ref, 0)], 0.0), np.nan)
+            out.append(_drawn(result, spec, i, beta, A[:, None], None, fname, fcols))
             continue
         if kind in ("beta", "fe"):
             beta = beta_hat + L @ rng.standard_normal(P)

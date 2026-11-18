@@ -179,7 +179,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          keep_intermediates: bool = False, verbose: bool = True, logger=None,
          log_level=None, random: str | None = None, random_cov: str = "unstructured",
          random_tol: float = 1e-6, random_method: str = "laplace",
-         random_nodes: int | None = None, firth: bool = False,
+         random_nodes: int | None = None, firth: bool = False, fe_solver: str = "auto",
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
@@ -311,10 +311,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
         elif spec.fe:
             if _binary and len(spec.fe) > 1:
                 raise _NeedsHdfe
-            if kind == "clogit":
-                raise ValueError(f"{spec.fml}: fixed effects are not available for the "
-                                 "conditional logit (a characteristic of the choice set "
-                                 "cancels; interact it with the alternatives instead)")
+            if kind == "clogit" and (firth or l2):
+                raise ValueError(f"{spec.fml}: firth= and l2= are not available with absorbed "
+                                 "alternative constants")
             if firth and spec.fe:
                 raise ValueError(f"{spec.fml}: firth= is not available with an absorbed "
                                  "fixed effect")
@@ -345,7 +344,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                     keep_intermediates=keep_intermediates, log=log, logger=logger,
                     options=opts))
                 continue
-            if len(spec.fe) > 1:
+            if len(spec.fe) > 1 and kind != "clogit":
                 raise ValueError(f"{spec.fml}: one absorbed fixed effect is available for "
                                  f"{_KINDS[kind]} (got {list(spec.fe)}); put small "
                                  "dimensions in as C(var)")
@@ -366,7 +365,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 keep_intermediates=keep_intermediates, log=log,
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
-                                random_nodes=random_nodes,
+                                random_nodes=random_nodes, fe_solver=fe_solver,
                                 firth=firth, offset=offset, start=start, device=device,
                                 link=link, altwise=altwise, budget=budget,
                                 own_covariates=own_covariates, binary=_binary))
@@ -379,7 +378,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
 def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weights, weights_type,
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
-             random_tol=1e-6, random_method="laplace", random_nodes=None,
+             random_tol=1e-6, random_method="laplace", random_nodes=None, fe_solver="auto",
              firth=False, offset=None, start=None,
              device=None, link="logit", altwise=False, budget=None, own_covariates=None,
              binary=False):
@@ -446,6 +445,10 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                         f"{spec.fml}: with random intercepts, a clustering must contain whole "
                         f"groups of the coarsest random grouping ({fe.random[-1].name}), and "
                         f"crossed groupings allow none; {bad} do not")
+        elif spec.fe and kind == "clogit":
+            from .alt_fe import _AlternativeFE
+            fe = _AlternativeFE(model, p0, spec.fe, log=log, logger=logger, budget=budget,
+                                solver=fe_solver)
         elif spec.fe:
             from .fe import _AbsorbedFE
             fe = _AbsorbedFE(model, p0, spec.fe[0], log=log, logger=logger, budget=budget)
@@ -489,6 +492,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                      "boundary or 'singular' fit): those groups differ no more than chance "
                      "allows, beyond the other terms; consider dropping the grouping. Its "
                      "standard errors are not meaningful at the boundary.", logger)
+        elif getattr(fe, "solver", None) == "contraction":
+            fit = fe.run_contraction(driver, theta0, spec.fml)
         else:
             fit = driver.run(theta0, spec.fml)
         if binary and link == "probit":
@@ -529,7 +534,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             cl_index = {k: (i, int(p0.cluster_tables[k].height))
                         for i, k in enumerate(clusters)}
             M, U = driver.meat(fit.theta, fit.H, weights_type, cl_index, hetero)
-            if kind in ("mlogit", "ologit"):
+            if kind in ("mlogit", "ologit") or (kind == "clogit" and fe is not None):
                 # a cluster whose rows were all dropped (a fixed effect's separation)
                 # is not one: G counts the clusters of the rows used
                 cl_index = {k: (i, int(np.count_nonzero(np.any(U[k] != 0, axis=1))))
@@ -571,7 +576,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         # the null with only the fixed effect: free, from its outcome counts
         # (with an offset the groups' shares are not the fixed-effect-only fit: none is reported)
         ll_fe0 = (fe.loglik_fe_only() * wfix
-                  if fe is not None and random is None and offset is None else np.nan)
+                  if fe is not None and random is None and offset is None
+                  and hasattr(fe, "loglik_fe_only") else np.nan)
         diagnostics = {
             "newton": {"iterations": fit.iterations, "converged": fit.converged,
                        "decrement": fit.decrement, "step_halvings": fit.halvings,
@@ -606,6 +612,11 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             diagnostics["random_effects"]["sigma_gradient"] = re_info["sigma"]["gradient"]
         if fe is not None and (random is None or outer is not None):
             diagnostics["separation"] = fe.separation
+            if hasattr(fe, "solver"):
+                diagnostics["alternative_constants"] = {
+                    "fe_solver": fe.solver, "groups": int(fe.C),
+                    "largest_group": int(fe.comp_size.max()) if fe.C else 0,
+                    "free": int(fe.n_params)}
         _separation_warning(spec, model, beta, np.sqrt(np.diag(all_vcovs["iid"][0])), fit, p0,
                             logger)
         if binary:
@@ -641,7 +652,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       fe_names=(list(spec.fe) if random is None
                                 else [outer] if outer is not None else []),
                       l2=float(l2),
-                      n_levels=({spec.fe[0]: fe.G} if fe is not None and random is None
+                      n_levels=({nm: g for nm, g in zip(fe.names, fe.G)} if hasattr(fe, "names")
+                                else {spec.fe[0]: fe.G} if fe is not None and random is None
                                 else {outer: fe.fixed_factor.G} if outer is not None else {}),
                       random_effects=({} if random is None else {
                           f.name: {"group": f.name, "n_groups": int(f.n_eff), "Sigma": f.S.copy(),
@@ -704,6 +716,8 @@ def _draw_info(fe, fit, random, random_method, kind):
         return {"kind": "beta"}               # the unit effects are conditioned out
     if fe is None:
         return {"kind": "beta"}
+    if hasattr(fe, "draw_info") and getattr(fit, "H", None) is not None:
+        return fe.draw_info(fit.theta, fit.H)          # absorbed alternative constants
     from .fe import _AbsorbedFE
     if isinstance(fe, _AbsorbedFE) and getattr(fit, "H", None) is not None:
         from .draws import fe_draw_info

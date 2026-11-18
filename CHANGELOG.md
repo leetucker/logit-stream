@@ -21,6 +21,21 @@ New
   fit agrees with brute-force maximum likelihood (estimates to 3e-3, standard errors of the
   coefficients and of Sigma to 3%). It takes about 1.6 times the Laplace fit's time at J = 5 (a numba kernel per group).
   `random_nodes` now defaults to the method's own value.
+- **Absorbed alternative constants in `clogit_stream`** (`"chosen ~ x | estab"`, one or more
+  dimensions): one constant per level of a characteristic of the alternatives. The first pass
+  finds the groups of levels that the choice sets link (union-find; with establishments chosen
+  within firms, the firms) and drops levels never chosen or always chosen. `fe_solver="auto"`
+  (default) picks between `"blocks"`, exact Newton steps with each group's information dense,
+  and `"contraction"`, the constants by count matching and the coefficients' information net of
+  them by conjugate gradients. Both agree with the dummy-coded fit, for one and two dimensions,
+  to 1e-6 in the estimates and standard errors. With one dimension and the blocks, `fixef()` has
+  the constants' standard errors and `draw_parameters` draws them jointly with the
+  coefficients. Robust and clustered (CRV1) variances, from each set's score net of the
+  constants, work with either solver and any number of dimensions.
+- **`predict(..., calibrate={"estab": totals})`** for the conditional logit: one dimension's
+  constants solved from known totals, so that each level's predicted choices equal its total,
+  given the coefficients (a draw's, under `draw_parameters`). It is for imputation where the
+  alternatives are new but their totals are known.
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
   engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
   variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.

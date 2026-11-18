@@ -19,7 +19,7 @@ than memory.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -269,9 +269,10 @@ class LogitResult(RegressionResult):
         the information by the delta method, so every draw is a valid
         covariance matrix.
 
-        With ``ranef=True`` (a model with one random grouping), each draw also carries a draw of every group's intercept
-        given the group's rows and that draw's parameters, as `draw_ranef`
-        makes them, all `n` from one read of the estimation sample; then
+        With ``ranef=True`` (a model with one random grouping), each draw
+        also carries a draw of every group's intercept given the group's
+        rows and that draw's parameters, as `draw_ranef` makes them, all
+        `n` from one read of the estimation sample; then
         each draw's `predict` includes them and `ranef()` returns them.
         `newdata`: as for `draw_ranef`."""
         from .draws import draw, draw_ranef_many
@@ -1016,16 +1017,124 @@ class ConditionalLogitResult(LogitResult):
                 "n_rows": self.diagnostics.get("n_rows")}
 
     def predict(self, newdata: Any = None, type: str = "response",
-                prefix: str | None = None, case: str | list | None = None) -> pl.LazyFrame:
+                prefix: str | None = None, case: str | list | None = None,
+                calibrate: dict | None = None) -> pl.LazyFrame:
         """Predictions as a lazy frame, one per row (alternative):
         ``type="response"`` the choice probability within the row's choice
         set (``prob``), ``"link"`` the utility x'b (``xb``). The choice sets
         are identified by `case` (default: the fit's). The probabilities
-        are a window over each set, which Polars evaluates set by set."""
+        are a window over each set, which Polars evaluates set by set.
+
+        With absorbed alternative constants, their values join by level; a
+        level the fit did not see (or dropped) gets a null, which leaves
+        the row out of its set. `calibrate` instead solves one dimension's
+        constants from known totals: ``{"estab": totals}``, `totals` a
+        frame of the dimension's column(s) and one more, the level's total
+        of choices among `newdata`'s sets. Each level's constant is then
+        the one at which its predicted choices, summed over the sets, equal
+        its total (the contraction delta += log(total / predicted)),
+        given the coefficients (this result's: a draw's, for multiple
+        imputation) and any other terms. Within each group of levels that
+        the sets link (a firm's establishments), the totals are first
+        scaled to the group's number of sets, with a warning if they
+        differ by more than 1%. A level with a total of 0 has probability
+        0; a level in `newdata` without a total is an error. The result is
+        collected (the solve needs every row of a group at once)."""
         if type not in ("response", "link"):
             raise ValueError(f"type must be 'response' or 'link', got {type!r}")
         case = self.case if case is None else ([case] if isinstance(case, str) else list(case))
+        if calibrate is not None:
+            return self._calibrated(self._frame(newdata), type, prefix, case, calibrate)
         return self._predict(self._frame(newdata), type, prefix, case)
+
+    def _calibrated(self, frame, type, prefix, case, calibrate, tol=1e-10, maxiter=10_000):
+        """`predict` with one dimension's constants solved from totals."""
+        from hdfe_stream.core.report import warn
+
+        from .alt_fe import _link, _roots
+        if not isinstance(calibrate, dict) or len(calibrate) != 1:
+            raise ValueError("calibrate= is {dimension: totals}, for one dimension")
+        (name, totals), = calibrate.items()
+        cols = self._spec["fe_cols"].get(name)
+        if cols is None:
+            raise ValueError(f"calibrate: {name!r} is not an absorbed dimension of this model "
+                             f"({list(self._spec['fe_cols'])})")
+        tot = as_lazy(totals).collect()
+        other = [c for c in tot.columns if c not in cols]
+        if len(other) != 1:
+            raise ValueError(f"calibrate: the totals frame needs {cols} and one column of "
+                             f"totals; it has {tot.columns}")
+        tcol = other[0]
+        # the utilities without this dimension's constants
+        spec = dict(self._spec)
+        spec["effects"] = [e for e in spec.get("effects", []) if e[0] != name]
+        bare = replace(self, _spec=spec)
+        df = bare._predict(frame.with_row_index("__row"), "link", "__xb", case).collect()
+        tot = tot.select(*cols, pl.col(tcol).cast(pl.Float64).alias("__t")) \
+            .with_row_index("__lev")
+        df = df.join(tot.with_columns(pl.col(c).cast(df.schema[c], strict=False)
+                                      for c in cols), on=cols, how="left",
+                     maintain_order="left")
+        if df["__t"].null_count():
+            raise ValueError(f"calibrate: {df['__t'].null_count():,} rows of newdata have a "
+                             f"{name} without a total")
+        df = df.sort([*case, "__row"])
+        cid = df.select(pl.struct(case).rank("dense").alias("c"))["c"].to_numpy() - 1
+        starts = np.r_[np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]]), len(cid)] \
+            .astype(np.int64)
+        lev = df["__lev"].to_numpy().astype(np.int64)
+        T = df.unique("__lev").sort("__lev")
+        Ltot = tot.height
+        target = np.zeros(Ltot)
+        target[T["__lev"].to_numpy()] = T["__t"].to_numpy()
+        xb = df["__xb"].to_numpy().astype(float)
+        live = (target[lev] > 0) & np.isfinite(xb)
+        # the groups of linked levels, and each one's number of sets
+        parent = np.arange(Ltot, dtype=np.int64)
+        _link(lev[:, None], starts, live, np.ones(len(starts) - 1, bool), parent)
+        root = _roots(parent)
+        n_sets = np.zeros(Ltot)
+        any_live = np.maximum.reduceat(live.astype(np.int64), starts[:-1]) > 0
+        first_live = np.maximum.reduceat(np.where(live, lev, -1), starts[:-1])
+        np.add.at(n_sets, root[first_live[any_live]], 1.0)
+        gsum = np.zeros(Ltot)
+        np.add.at(gsum, root, target)
+        scale = np.where(gsum[root] > 0, n_sets[root] / np.where(gsum[root] > 0,
+                                                                  gsum[root], 1.0), 0.0)
+        g = np.unique(root[np.unique(lev[live])])
+        off_by = np.abs(n_sets[g] / np.where(gsum[g] > 0, gsum[g], 1.0) - 1)
+        if np.any(off_by > 0.01):
+            warn(f"calibrate: in {int((off_by > 0.01).sum()):,} of {len(g):,} groups the totals "
+                 f"differ from the number of choice sets by more than 1% (by up to "
+                 f"{off_by.max():.0%}); they were scaled to it")
+        target = target * scale
+        delta = np.where(target > 0, np.log(np.maximum(target, 1e-300)), 0.0)
+        st0 = starts[:-1]
+        sizes = np.diff(starts)
+        for _ in range(maxiter):
+            u = np.where(live, xb + delta[lev], -np.inf)
+            m = np.repeat(np.maximum.reduceat(u, st0), sizes)
+            e = np.where(live, np.exp(u - np.where(np.isfinite(m), m, 0.0)), 0.0)
+            S = np.repeat(np.add.reduceat(e, st0), sizes)
+            p = np.where(S > 0, e / np.where(S > 0, S, 1.0), 0.0)
+            pred = np.bincount(lev, weights=p, minlength=Ltot)
+            ok = target > 0
+            step = np.zeros(Ltot)
+            step[ok] = np.log(target[ok] / np.maximum(pred[ok], 1e-300))
+            delta += step
+            if np.max(np.abs(step), initial=0.0) < tol:
+                break
+        else:
+            warn(f"calibrate: the constants did not converge in {maxiter} rounds "
+                 f"(largest step {np.max(np.abs(step)):.2g})")
+        out = np.where(S > 0, p, np.nan)
+        res = df.with_columns(pl.Series("__p", out).fill_nan(None),
+                              pl.Series("__u", np.where(live, xb + delta[lev], np.nan))
+                              .fill_nan(None)).sort("__row")
+        col = (pl.col("__u") if type == "link" else pl.col("__p")).alias(
+            prefix or ("xb" if type == "link" else "prob"))
+        keep = [c for c in frame.collect_schema().names()]
+        return res.select(*keep, col).lazy()
 
     def _predict(self, frame, type, prefix, case):
         xs = self._xexprs()
@@ -1038,11 +1147,19 @@ class ConditionalLogitResult(LogitResult):
                    .then(None).otherwise(xb)
         if self._spec.get("offset") is not None:
             xb = xb + self._spec["offset"]
+        tmp = []
+        if self._spec.get("effects"):
+            # the absorbed alternative constants: null for a level the fit did not
+            # see, or dropped (never chosen: its probability is 0), which leaves the
+            # row out of its set's normalization
+            frame, tmp = self._with_fe(frame)
+            xb = pl.when(pl.any_horizontal([pl.col(t).is_null() for t in tmp])).then(None) \
+                .otherwise(xb + pl.sum_horizontal([pl.col(t) for t in tmp]))
         if type == "link":
-            return frame.with_columns(xb.alias(prefix or "xb"))
+            return frame.with_columns(xb.alias(prefix or "xb")).drop(tmp)
         u = xb - xb.max().over(case)
         p = u.exp() / u.exp().sum().over(case)
-        return frame.with_columns(p.alias(prefix or "prob"))
+        return frame.with_columns(p.alias(prefix or "prob")).drop(tmp)
 
     def resid(self) -> pl.LazyFrame:
         """The estimation sample, lazily, a row per alternative: `row_id`,
