@@ -222,6 +222,46 @@ def test_calibrated_predictions_match_the_totals():
     assert not np.allclose(pd_["prob"].to_numpy(), p["prob"].to_numpy())
 
 
+def test_calibration_streams_by_group(monkeypatch):
+    """Streamed a batch of whole groups at a time, the calibration is the
+    one in memory: firms packed into small batches; a chain of sets that
+    links every level into one group (which then stays whole); the
+    warnings summed over the batches; rows in newdata's order."""
+    from logit_stream import calibrate as C
+    fit = clogit_stream("chosen ~ dist | estab", _data(seed=8), case="case", verbose=False)
+    new = _data(seed=9, F=20).with_columns(pl.col("estab") + 10_000)
+    new = new.sample(fraction=1.0, shuffle=True, seed=3)            # sets' rows apart
+    totals = new.group_by("estab").agg(pl.col("chosen").sum().cast(pl.Float64).alias("n"))
+    whole = fit.predict(new.drop("chosen"), calibrate={"estab": totals}).collect()
+    monkeypatch.setattr(C, "CALIBRATE_ROWS", 150)
+    lf = fit.predict(new.drop("chosen"), calibrate={"estab": totals})
+    assert "logit_calibrate_" in str(lf.explain())                 # read from the batches' files
+    part = lf.collect()
+    assert part["case"].to_list() == new["case"].to_list()
+    np.testing.assert_allclose(part["prob"].to_numpy(), whole["prob"].to_numpy(), atol=1e-9)
+    xb = fit.predict(new.drop("chosen"), type="link", calibrate={"estab": totals}).collect()
+    assert xb["xb"].null_count() == (totals.filter(pl.col("n") == 0).join(
+        new, on="estab").height)
+    with pytest.warns(UserWarning, match="in 20 of 20 groups"):
+        fit.predict(new.drop("chosen"),
+                    calibrate={"estab": totals.with_columns(pl.col("n") * 2)}).collect()
+    # a chain: set k chooses among levels k and k + 1, so every level is linked
+    rng = np.random.default_rng(4)
+    K = 40
+    monkeypatch.setattr(C, "CALIBRATE_ROWS", 20)
+    chain = pl.DataFrame({"case": np.repeat(np.arange(K), 2),
+                          "estab": np.c_[np.arange(K), np.arange(1, K + 1)].ravel() + 10_000,
+                          "dist": rng.exponential(size=2 * K)})
+    ct = pl.DataFrame({"estab": np.arange(K + 1) + 10_000,
+                       "n": np.full(K + 1, K / (K + 1))})
+    streamed = fit.predict(chain, calibrate={"estab": ct}).collect()
+    monkeypatch.setattr(C, "CALIBRATE_ROWS", 10**9)
+    once = fit.predict(chain, calibrate={"estab": ct}).collect()
+    np.testing.assert_allclose(streamed["prob"].to_numpy(), once["prob"].to_numpy(), atol=1e-9)
+    got = streamed.group_by("estab").agg(pl.col("prob").sum()).sort("estab")
+    np.testing.assert_allclose(got["prob"].to_numpy(), K / (K + 1), atol=1e-6)
+
+
 def _without_separation(df):
     """The data less what the fit would drop (never-chosen establishments,
     sets left with fewer than two, establishments chosen wherever they

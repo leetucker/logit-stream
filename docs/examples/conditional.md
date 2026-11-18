@@ -224,9 +224,22 @@ coefficients. That is what imputation needs where the establishments are new
 (no workers of theirs were in the fit) but their employment is known. Each
 draw from `draw_parameters` calibrates under its own coefficients. Within
 each firm the totals are first scaled to its number of choice sets, with a
-warning if they differ by more than 1%. The calibration collects `newdata` in
-memory, since it needs all of a firm's rows at once. With 4.1 million rows (a
-99 MB frame) its peak was 0.8 GB, about 200 bytes per row.
+warning if they differ by more than 1%.
+
+The solve needs all of a group's rows at once: a firm, or more generally the
+levels that `newdata`'s choice sets link together. So `newdata` is streamed
+through disk a batch of whole groups at a time, about 2 million rows per
+batch, or the largest group if that is bigger. The groups are found by label
+propagation over the (set, establishment) pairs on disk. Each batch's
+constants come from contraction rounds, delta += log(total / predicted),
+which converge in a few rounds when every worker in a firm faces all of its
+establishments. When they slow down, as on long chains of linked levels,
+Newton's method finishes the solve. The predictions come back as a lazy scan
+of the batches' files, in `newdata`'s order, so they can be sunk to disk
+without ever being in memory. The files are removed when Python exits. With
+4.1 million rows (a 99 MB frame) the calibration took 4 seconds. Peak memory
+rose by 0.5 GB with the default batches and by 0.36 GB with batches of
+500,000 rows, including the collected result.
 
 In a simulation (3,000 firms of 2 to 10 establishments and 5 to 150 workers
 in the fit, 1,000 new firms to impute, true distance coefficient -1.2), the

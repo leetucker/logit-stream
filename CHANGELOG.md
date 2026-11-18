@@ -35,7 +35,10 @@ New
 - **`predict(..., calibrate={"estab": totals})`** for the conditional logit: one dimension's
   constants solved from known totals, so that each level's predicted choices equal its total,
   given the coefficients (a draw's, under `draw_parameters`). It is for imputation where the
-  alternatives are new but their totals are known.
+  alternatives are new but their totals are known. `newdata` is streamed through disk a batch
+  of whole groups (a firm's establishments, or whatever levels its sets link) at a time, so
+  memory is bounded by the batch or the largest group, not by `newdata`; the result is a lazy
+  scan in `newdata`'s order. Contraction rounds, then Newton's method when they slow.
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
   engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
   variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.
