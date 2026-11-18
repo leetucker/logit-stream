@@ -276,8 +276,6 @@ def test_ranef_conditional_sd_multinomial():
 
 def test_refusals():
     df = _small(2, G=60)
-    with pytest.raises(ValueError, match="logit_stream"):
-        mlogit_stream("y ~ x1", df, random="g", random_method="adaptive", verbose=False)
     with pytest.raises(ValueError, match="at least 5"):
         logit_stream("y ~ x1", df, random="g", random_method="adaptive", random_nodes=3,
                      verbose=False)

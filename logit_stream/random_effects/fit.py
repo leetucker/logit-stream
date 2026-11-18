@@ -221,37 +221,44 @@ def _sigma_inference(driver, re, fit):
         re.prepare_laplace()
         re._cache = re._data_pass(driver, fit.theta, extra=True)
     params, V, g0, Jb = re.sigma_vcov()
-    z = 1.959963984540054
     by = {}
     for fi, f in enumerate(re.random):
         idx = [i for i, p in enumerate(params) if p[0] == fi]
         own = [(j, l) for _, j, l in (params[i] for i in idx)]
-        Vf = V[np.ix_(idx, idx)]
-        S, d = f.S, re.d
-        se = np.sqrt(np.clip(np.diag(Vf), 0, None))
-        S_se = np.full((d, d), np.nan)
-        for (j, l), x in zip(own, se):
-            S_se[j, l] = S_se[l, j] = x
-        sd = np.sqrt(np.diag(S))
-        sd_se = np.array([se[own.index((j, j))] / (2 * sd[j]) for j in range(d)])
-        corr = S / np.outer(sd, sd)
-        corr_se = np.full((d, d), np.nan)
-        pos = {p: i for i, p in enumerate(own)}
-        for (j, l) in own:
-            if j == l:
-                continue
-            gv = np.zeros(len(own))
-            gv[pos[(j, l)]] = 1 / (sd[j] * sd[l])
-            gv[pos[(j, j)]] = -corr[j, l] / (2 * S[j, j])
-            gv[pos[(l, l)]] = -corr[j, l] / (2 * S[l, l])
-            corr_se[j, l] = corr_se[l, j] = float(np.sqrt(max(gv @ Vf @ gv, 0.0)))
-        # (at the floor, the interval for log sd reaches to infinity)
-        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-            sd_ci = np.column_stack([sd * np.exp(-z * sd_se / sd), sd * np.exp(z * sd_se / sd)])
-            zc = np.arctanh(np.clip(corr, -1 + 1e-15, 1 - 1e-15))
-            zse = corr_se / (1 - corr ** 2)
-            corr_ci = np.stack([np.tanh(zc - z * zse), np.tanh(zc + z * zse)], axis=-1)
-        by[f.name] = {"Sigma_se": S_se, "sd": sd, "sd_se": sd_se, "sd_ci": sd_ci, "corr": corr,
-                      "corr_se": corr_se, "corr_ci": corr_ci, "vcov_Sigma": Vf,
-                      "Sigma_params": [list(p) for p in own]}
+        by[f.name] = _sigma_summary(f.S, V[np.ix_(idx, idx)], own)
     return {"by_factor": by, "vcov": V, "J": Jb, "gradient": [float(x) for x in g0]}
+
+
+def _sigma_summary(S, Vf, own):
+    """One grouping's Sigma, from its elements' variance `Vf` (the elements
+    `own`, (j, l) pairs, diagonal ones first): standard errors of Sigma,
+    the sds and the correlations (delta method), with Wald intervals on the
+    scales that respect their bounds (log sd, Fisher's z)."""
+    z = 1.959963984540054
+    d = S.shape[0]
+    se = np.sqrt(np.clip(np.diag(Vf), 0, None))
+    S_se = np.full((d, d), np.nan)
+    for (j, l), x in zip(own, se):
+        S_se[j, l] = S_se[l, j] = x
+    sd = np.sqrt(np.diag(S))
+    sd_se = np.array([se[own.index((j, j))] / (2 * sd[j]) for j in range(d)])
+    corr = S / np.outer(sd, sd)
+    corr_se = np.full((d, d), np.nan)
+    pos = {p: i for i, p in enumerate(own)}
+    for (j, l) in own:
+        if j == l:
+            continue
+        gv = np.zeros(len(own))
+        gv[pos[(j, l)]] = 1 / (sd[j] * sd[l])
+        gv[pos[(j, j)]] = -corr[j, l] / (2 * S[j, j])
+        gv[pos[(l, l)]] = -corr[j, l] / (2 * S[l, l])
+        corr_se[j, l] = corr_se[l, j] = float(np.sqrt(max(gv @ Vf @ gv, 0.0)))
+    # (at the floor, the interval for log sd reaches to infinity)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        sd_ci = np.column_stack([sd * np.exp(-z * sd_se / sd), sd * np.exp(z * sd_se / sd)])
+        zc = np.arctanh(np.clip(corr, -1 + 1e-15, 1 - 1e-15))
+        zse = corr_se / (1 - corr ** 2)
+        corr_ci = np.stack([np.tanh(zc - z * zse), np.tanh(zc + z * zse)], axis=-1)
+    return {"Sigma_se": S_se, "sd": sd, "sd_se": sd_se, "sd_ci": sd_ci, "corr": corr,
+            "corr_se": corr_se, "corr_ci": corr_ci, "vcov_Sigma": Vf,
+            "Sigma_params": [list(p) for p in own]}

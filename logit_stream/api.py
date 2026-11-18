@@ -145,14 +145,20 @@ _RANDOM = """
         rows per group, the coefficients can be a few tenths of a standard
         error away), or adaptive Gauss-Hermite quadrature (lme4's
         ``nAGQ > 1``): the maximum likelihood to the quadrature's accuracy,
-        for one random grouping with a scalar intercept (`logit_stream`,
-        `ologit_stream`), iid variance only. Laplace's approximation
-        underestimates the variance when groups have few rows (by about a
-        fifth with 3 rows a group of a binary outcome); "adaptive" does not.
-        See `logit_stream.random_effects.adaptive`.
-    random_nodes : int, default 9
-        The quadrature's points per group with ``random_method="adaptive"``
-        (at least 5).
+        for one random grouping (a scalar intercept with `logit_stream` and
+        `ologit_stream`, a vector of J - 1 with `mlogit_stream`), iid
+        variance only. Laplace's approximation is biased when groups have
+        few rows (the variance by about a fifth too low with 3 rows a group
+        of a binary outcome; with a multinomial outcome also the
+        correlations, and a rare level's variance upwards); "adaptive" is
+        not. See `logit_stream.random_effects.adaptive` and
+        `logit_stream.random_effects.adaptive_mnl`.
+    random_nodes : int, optional
+        The quadrature's points per dimension with
+        ``random_method="adaptive"``: 9 by default (at least 5) for the
+        binary and ordered logit; 5 by default (at least 3) for the
+        multinomial logit, whose rule is their product over the J - 1
+        dimensions (625 points per group for J = 5; at most 20,000).
     random_cov : {"unstructured", "diagonal"}, default "unstructured"
         The form of Sigma (multinomial; the ordered logit's is 1 x 1).
     random_tol : float, default 1e-6

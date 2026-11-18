@@ -76,13 +76,19 @@ Layout
                 and Sigma's standard errors
     adaptive.py adaptive Gauss-Hermite quadrature for one scalar random
                 intercept (``random_method="adaptive"``), from the joint mode
+    adaptive_mnl.py
+                adaptive Gauss-Hermite quadrature for the multinomial logit's
+                vector of intercepts (``random_method="adaptive"``), from the
+                joint mode
 """
 
 from .adaptive import ADAPTIVE_NODES, MIN_NODES, _fit_adaptive
+from .adaptive_mnl import MAX_POINTS, MNL_MIN_NODES, MNL_NODES, _fit_adaptive_mnl
 from .fit import GAIN_TOL, SIGMA_STEP, _fit_random, _refine_laplace, _sigma_inference
 from .model import DENSE_MAX, _RandomEffects
 from .sigma import VAR_FLOOR
 
-__all__ = ["ADAPTIVE_NODES", "DENSE_MAX", "GAIN_TOL", "MIN_NODES", "SIGMA_STEP", "VAR_FLOOR",
-           "_RandomEffects", "_fit_adaptive", "_fit_random", "_refine_laplace",
+__all__ = ["ADAPTIVE_NODES", "DENSE_MAX", "GAIN_TOL", "MAX_POINTS",
+           "MNL_MIN_NODES", "MNL_NODES", "MIN_NODES", "SIGMA_STEP", "VAR_FLOOR",
+           "_RandomEffects", "_fit_adaptive", "_fit_adaptive_mnl", "_fit_random", "_refine_laplace",
            "_sigma_inference"]

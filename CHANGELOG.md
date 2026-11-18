@@ -11,6 +11,17 @@ New
   0.494 and adaptive quadrature's 0.644. It agrees with brute-force maximum likelihood to 1e-6
   standard errors in the tests, and in the simulations was faster than the Laplace fit. Only
   the iid variance is available with it, on the CPU.
+- **`random_method="adaptive"` for the multinomial logit**: adaptive Gauss-Hermite quadrature for
+  the (J - 1)-vector of random intercepts of one grouping (`mlogit_stream`, optionally within an
+  absorbed fixed effect), with the product of `random_nodes` points per dimension (default 5, at
+  least 3; at most 20,000 points per group), centred at each group's conditional mode and scaled
+  by its conditional covariance. Laplace's approximation is biased with small groups. With J = 5
+  and three rows per group in a simulation, it put the common levels' variances about a fifth
+  too low, the rarest level's twice too high, and the correlations 40% too low. The adaptive
+  fit agrees with brute-force maximum likelihood (estimates to 3e-3, standard errors of the
+  coefficients and of Sigma to 3%). It is slower than the Laplace fit (about 4x at J = 5), and
+  `draw_parameters` / `draw_ranef` are not yet available for it. `random_nodes` now defaults to
+  the method's own value.
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
   engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
   variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.

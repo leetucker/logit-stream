@@ -34,7 +34,10 @@ from .newton import _Driver
 from .random_effects import (
     ADAPTIVE_NODES,
     MIN_NODES,
+    MNL_MIN_NODES,
+    MNL_NODES,
     _fit_adaptive,
+    _fit_adaptive_mnl,
     _fit_random,
     _RandomEffects,
     _refine_laplace,
@@ -176,7 +179,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          keep_intermediates: bool = False, verbose: bool = True, logger=None,
          log_level=None, random: str | None = None, random_cov: str = "unstructured",
          random_tol: float = 1e-6, random_method: str = "laplace",
-         random_nodes: int = ADAPTIVE_NODES, firth: bool = False,
+         random_nodes: int | None = None, firth: bool = False,
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
@@ -247,12 +250,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             raise ValueError("random_cov must be 'unstructured' or 'diagonal'")
         if random_method not in ("laplace", "joint-mode", "adaptive"):
             raise ValueError("random_method must be 'laplace', 'joint-mode' or 'adaptive'")
+        if random_nodes is None:
+            random_nodes = MNL_NODES if kind == "mlogit" else ADAPTIVE_NODES
         if random_method == "adaptive":
-            if kind != "ologit":
-                raise ValueError("random_method='adaptive' (adaptive quadrature, one scalar "
-                                 "random intercept) is for logit_stream and ologit_stream; for "
-                                 "a binary outcome use logit_stream, not a two-level "
-                                 "mlogit_stream")
             if len(random) != 1:
                 raise ValueError("random_method='adaptive' takes one random grouping")
             if device not in (None, "cpu"):
@@ -260,8 +260,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             if profile:
                 raise ValueError("profile= is not available with random_method='adaptive'")
             if (isinstance(random_nodes, bool) or not isinstance(random_nodes, (int, np.integer))
-                    or random_nodes < MIN_NODES):
-                raise ValueError(f"random_nodes must be an integer of at least {MIN_NODES} (with "
+                    or random_nodes < (MNL_MIN_NODES if kind == "mlogit" else MIN_NODES)):
+                raise ValueError(f"random_nodes must be an integer of at least "
+                                 f"{MNL_MIN_NODES if kind == 'mlogit' else MIN_NODES} (with "
                                  "fewer, the nodes held during each Newton step bias the "
                                  "fit; for Laplace's approximation use "
                                  "random_method='laplace')")
@@ -378,7 +379,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
 def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weights, weights_type,
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
-             random_tol=1e-6, random_method="laplace", random_nodes=ADAPTIVE_NODES,
+             random_tol=1e-6, random_method="laplace", random_nodes=None,
              firth=False, offset=None, start=None,
              device=None, link="logit", altwise=False, budget=None, own_covariates=None,
              binary=False):
@@ -390,7 +391,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         p0 = _build(lf, spec, kind, run.path, engine, weights=weights,
                     clusters=clusters, case=case, levels=levels,
                     in_memory=(storage == "memory"),
-                    sort_fe=(random[0] if random is not None and random_method == "adaptive"
+                    sort_fe=(random[0] if random is not None
+                             and random_method == "adaptive"
                              else SORT_FE and kind in ("mlogit", "ologit") and random is None
                              and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
@@ -458,9 +460,11 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             # the joint-mode fit only starts the exact approximation's, which
             # carries Sigma on to random_tol
             tol_a = (max(random_tol, 1e-5) if random_method == "laplace"
-                     else max(random_tol, 1e-4) if random_method == "adaptive" else random_tol)
+                     else max(random_tol, 1e-4) if random_method == "adaptive"
+                     else random_tol)
             if random_method == "adaptive" and (clusters or hetero):
-                raise ValueError(f"{spec.fml}: random_method='adaptive' has the iid variance "
+                raise ValueError(f"{spec.fml}: random_method={random_method!r} has the iid "
+                                 "variance "
                                  "only (no clustered or heteroskedasticity-robust one yet)")
             fit, re_info = _fit_random(driver, fe, theta0, spec.fml, tol_a, log, logger)
             if random_method == "laplace":
@@ -472,8 +476,9 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                 re_info["newton_steps"] += info["laplace_steps"]
                 re_info["seconds"] = round(re_info["seconds"] + info["laplace_seconds"], 3)
             if random_method == "adaptive":
-                fit, re_info = _fit_adaptive(driver, fe, fit, re_info, spec.fml, tol,
-                                             random_nodes, log, logger)
+                fit_a = _fit_adaptive_mnl if kind == "mlogit" else _fit_adaptive
+                fit, re_info = fit_a(driver, fe, fit, re_info, spec.fml, tol, random_nodes, log,
+                                     logger)
             else:
                 re_info["sigma"] = _sigma_inference(driver, fe, fit)
             sing = fe.singular()
