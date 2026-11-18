@@ -440,6 +440,8 @@ def _fit_adaptive(driver, re, fit, re_info, fml, tol, n_nodes, log, logger):
     re.sd_override = [np.where(ad.f.keep, res["scale"], np.nan)[:, None]]
     re.adaptive_V = res["Vb_cond"]
     re.method = "adaptive"
+    from ..draws import adaptive_draw_info
+    re.draw_info = adaptive_draw_info(ad, res["E"], res["b"], res["alpha"], nu, res["nu_free"])
     se_nu = float(np.sqrt(res["var_nu"])) if np.isfinite(res["var_nu"]) else np.nan
     z = 1.959963984540054
     dS = 2 * tau2                                  # d Sigma / d nu

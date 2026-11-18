@@ -33,6 +33,7 @@ abridged; your numbers may differ in the last digits.
 | [Random intercepts](random_intercepts.md) | group intercepts with an estimated covariance, nested groupings, shrinkage |
 | [Incidental parameters](incidental_parameters.md) | the fixed-effects logit's bias in short panels, the bias correction, and Chamberlain's conditional logit |
 | [Imputation at scale](imputation.md) | predicting a characteristic for a large file, and combining the predictions with other information |
+| [Multiple imputation](multiple_imputation.md) | drawing the parameters (`draw_parameters`) and each group's intercept, for imputations that carry the estimates' uncertainty |
 
 ## The simulated data
 
@@ -67,4 +68,5 @@ fixed_effects
 random_intercepts
 incidental_parameters
 imputation
+multiple_imputation
 ```

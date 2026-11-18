@@ -656,6 +656,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                  "incomplete": p0.incomplete}
         if fe is not None:
             rspec.update(fe.result_spec(fit.theta))
+        rspec["draw"] = _draw_info(fe, fit, random, random_method, kind)
         if kind == "mlogit" and model.own:
             rspec["free"] = model.free().copy()
         if kind == "mlogit":
@@ -685,6 +686,24 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
     finally:
         if not keep_intermediates:
             run.cleanup()
+
+
+def _draw_info(fe, fit, random, random_method, kind):
+    """What `draw_parameters` needs, kept on the result (see draws.py)."""
+    if random is not None:
+        if random_method != "adaptive":
+            return {"kind": None, "why": "with random intercepts it needs "
+                    "random_method='adaptive'"}
+        return getattr(fe, "draw_info", None) or {"kind": None, "why": "no draw information"}
+    if kind == "cfelogit":
+        return {"kind": "beta"}               # the unit effects are conditioned out
+    if fe is None:
+        return {"kind": "beta"}
+    from .fe import _AbsorbedFE
+    if isinstance(fe, _AbsorbedFE) and getattr(fit, "H", None) is not None:
+        from .draws import fe_draw_info
+        return fe_draw_info(fe, fit.theta, fit.H)
+    return {"kind": None, "why": "it needs at most one absorbed fixed effect"}
 
 
 def _own_columns(own_covariates):

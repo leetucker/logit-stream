@@ -178,7 +178,11 @@ class LogitResult(RegressionResult):
 
     def fixef(self, name: str | None = None) -> pl.LazyFrame:
         """The absorbed fixed effects: one row per level of the dimension,
-        with its effects (see the subclass) and its number of observations.
+        with its effects (see the subclass), their standard errors
+        (``se_<name>``, or ``se_<name>:<level>``, where `draw_parameters` is
+        available: the iid variance given the coefficients plus what the
+        coefficients' uncertainty, from `vcov`, adds) and its number of
+        observations.
         The table is held in memory; this is a lazy view of it."""
         tables = self._spec.get("fixef", {}) if self._spec else {}
         if not tables and self.random_effects:
@@ -192,7 +196,20 @@ class LogitResult(RegressionResult):
         if name not in tables:
             raise KeyError(f"{name!r} is not a fixed effect of this model; it has "
                            + ", ".join(map(repr, tables)))
-        return tables[name].lazy()
+        table = tables[name]
+        if self._spec.get("draw_index") is None:
+            from .draws import level_se
+            se = level_se(self)
+            if se is not None:
+                cols = [c for d, values, kind in self._spec["effects"] if d == name
+                        for c in values]
+                ses = [pl.Series("se_" + c[3:], np.where(np.isfinite(se[:, j]), se[:, j], np.nan))
+                       .fill_nan(None) for j, c in enumerate(cols)]
+                rest = [c for c in table.columns if c != "n_obs"]
+                table = table.with_columns(ses).select(*rest, *[x.name for x in ses],
+                                                       *(["n_obs"] if "n_obs" in table.columns
+                                                         else []))
+        return table.lazy()
 
     def ranef(self, name: str | None = None) -> pl.LazyFrame:
         """A random grouping's predicted intercepts (their modes given the
@@ -207,6 +224,9 @@ class LogitResult(RegressionResult):
         the grouping, needed when there are several."""
         if not self.random_effects:
             raise KeyError("this model has no random intercepts")
+        if self._spec.get("draw_index") is not None:
+            raise ValueError("a parameter draw does not carry the group intercepts: draw them "
+                             "given the draw (see draw_parameters)")
         tables = self._spec["ranef"]
         if name is None:
             if len(tables) > 1:
@@ -216,6 +236,34 @@ class LogitResult(RegressionResult):
             raise KeyError(f"{name!r} is not a random grouping of this model; it has "
                            + ", ".join(map(repr, tables)))
         return tables[name].lazy()
+
+    def draw_parameters(self, n: int, seed: Any = None) -> list:
+        """`n` independent draws of the parameters from their estimated
+        sampling distribution (the normal approximation: the estimates as
+        the mean, their variance as the variance), each returned as a copy
+        of this result at the drawn values, for multiple imputation or for
+        simulating the uncertainty of a prediction: its `beta`, `fixef()`,
+        `random_effects` (``sd`` and ``Sigma``) and `predict` are the draw's.
+
+        The coefficients are drawn from N(beta, vcov), with this result's
+        `vcov` (iid or robust). An absorbed fixed effect's levels are drawn
+        jointly with them: each level from its distribution given the drawn
+        coefficients, from the model's information (exact for the normal
+        approximation, since a row is in one level; nothing is read). With a
+        random intercept fitted by ``random_method="adaptive"``, the
+        coefficients and log sd are drawn jointly (from the inverse of their
+        information net of the fixed effect, as `vcov` is), then the fixed
+        effect's levels given them. The groups' own intercepts are not part
+        of a draw: a drawn result's `predict` leaves them out (as for a group
+        the fit did not see), and its `ranef()` raises; draw each group's
+        intercept from its distribution given its rows and the draw.
+
+        Available without a fixed effect, with one absorbed fixed effect,
+        and with an adaptive random intercept; not with the Laplace or
+        joint-mode random intercepts, several fixed effects, the mixed or
+        nested logit. `seed`: an int, None or a `numpy.random.Generator`."""
+        from .draws import draw
+        return draw(self, n, seed)
 
     def varcorr(self) -> pl.DataFrame:
         """The random intercepts' standard deviations and correlations, one

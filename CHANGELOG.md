@@ -14,12 +14,25 @@ New
 - **`logit_stream(random=...)`**: random intercepts for the binary logit, fitted by this package's
   engine (as the two-level ordered logit), Laplace by default, with lme4's conventions for the
   variance (no small-sample factor). Before, `random=` reached `feglm_stream` and failed.
+- **`draw_parameters(n, seed)`: draws of the parameters from their estimated sampling
+  distribution**, for multiple imputation and simulated predictions. Each draw is a copy of the
+  result whose `beta`, `fixef()`, `random_effects` and `predict` are the draw's. It covers the
+  coefficients (from `vcov`), one absorbed fixed effect's levels jointly with them (each level
+  given the coefficients, from the blocks the fit already computed; no data are read), and, with
+  `random_method="adaptive"`, the random intercept's sd. The groups' own intercepts are not
+  drawn: a drawn result's `predict` leaves them out. Not available for the Laplace or joint-mode
+  random intercepts, several fixed effects, or the mixed and nested logit.
+- **`fixef()` has standard errors** (`se_<name>`, or `se_<name>:<level>`) where
+  `draw_parameters` is available: each level's variance given the coefficients, plus what the
+  coefficients' uncertainty adds.
 - **`ranef()` has each group's conditional sd** (`sd_<grouping>`, or `sd_<grouping>:<level>` for
   the multinomial logit): lme4's `condVar`, at the estimates.
 
 Documentation
 - The random-intercepts page has a section on Laplace's small-group bias and the adaptive
   quadrature.
+- New example, "Multiple imputation": parameter draws, each firm's intercept drawn given its
+  known workers, and the imputations (`examples/multiple_imputation.py`).
 
 ## 0.4.0
 
