@@ -20,6 +20,7 @@ which are in `logit_stream.simulate`.
 | `etable` | regression tables, through pyfixest (hdfe-stream's) |
 | `bonferroni`, `holm` | multiple-testing corrections across models (hdfe-stream's) |
 | `simulate_people`, `simulate_choices`, `simulate_panel` | simulated data with known coefficients |
+| `logit_stream.assign` | constrained assignment to known totals: `sample_assignments`, the samplers `SwapMCMC`, `ExactSmall`, `Balanced`, and `GaussianPenalty` (experimental) |
 
 ```{toctree}
 :hidden:

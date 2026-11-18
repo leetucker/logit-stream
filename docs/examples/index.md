@@ -14,11 +14,11 @@ python quickstart.py
 ```
 
 or, from a clone of the repository, `python examples/quickstart.py`. Most
-take a few seconds; the random-intercepts and mixed-logit examples take
-about a minute, since they fit several models each. The scripts that write
-files put them in an `output/` directory next to the script, which you can
-delete afterwards. The outputs shown on these pages are from those runs,
-abridged; your numbers may differ in the last digits.
+take a few seconds; the random-intercepts, mixed-logit and
+constrained-assignment examples take about a minute, since they fit several
+models or draw many imputations. The scripts that write files put them in an
+`output/` directory next to the script, which you can delete afterwards. The outputs shown on these pages
+are from those runs, abridged; your numbers may differ in the last digits.
 
 | | |
 |---|---|
@@ -34,6 +34,7 @@ abridged; your numbers may differ in the last digits.
 | [Incidental parameters](incidental_parameters.md) | the fixed-effects logit's bias in short panels, the bias correction, and Chamberlain's conditional logit |
 | [Imputation at scale](imputation.md) | predicting a characteristic for a large file, and combining the predictions with other information |
 | [Multiple imputation](multiple_imputation.md) | drawing the parameters (`draw_parameters`) and each group's intercept, for imputations that carry the estimates' uncertainty |
+| [Constrained assignment](constrained_assignment.md) | imputing each worker's establishment so that the establishments' counts match known totals, exactly or approximately (experimental) |
 
 ## The simulated data
 
@@ -69,4 +70,5 @@ random_intercepts
 incidental_parameters
 imputation
 multiple_imputation
+constrained_assignment
 ```

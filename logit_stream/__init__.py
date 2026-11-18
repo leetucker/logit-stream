@@ -18,6 +18,9 @@ Layout
     fe.py            one absorbed fixed effect (multinomial, ordered)
     multi_fe.py      several, for the multinomial logit (a Poisson regression)
     random_effects/  random intercepts (Laplace's approximation)
+    alt_fe.py        the conditional logit's absorbed alternative constants
+    calibrate.py     constants solved from known totals; streaming by group
+    assign.py        constrained assignment to known totals (experimental)
     optimize.py      Newton and quasi-Newton steps from an analytic gradient,
                      for the likelihoods that are not concave
     _choice.py       what the mixed and nested logit's fits share
@@ -44,6 +47,7 @@ from .api import (
     oprobit_stream,
     probit_stream,
 )
+from .assign import ExperimentalWarning
 from .results import (
     BinaryLogitResult,
     BinaryProbitResult,
@@ -76,5 +80,5 @@ __all__ = [
     "OrderedLogitResult", "OrderedProbitResult",
     "ConditionalLogitResult", "ConditionalFELogitResult",
     "MixedLogitResult", "NestedLogitResult",
-    "LogitMulti", "etable", "bonferroni", "holm", "__version__",
+    "LogitMulti", "ExperimentalWarning", "etable", "bonferroni", "holm", "__version__",
 ]

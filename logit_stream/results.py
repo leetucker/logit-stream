@@ -1052,6 +1052,32 @@ class ConditionalLogitResult(LogitResult):
             return calibrated(self, self._frame(newdata), type, prefix, case, calibrate)
         return self._predict(self._frame(newdata), type, prefix, case)
 
+    def sample_assignments(self, newdata: Any, totals: dict, sampler=None, seed: int = 0,
+                           case: str | list | None = None,
+                           prefix: str = "assigned") -> pl.LazyFrame:
+        """Draw each choice set's alternative so that one dimension's
+        levels' counts match known totals, exactly or approximately
+        (experimental: see `logit_stream.assign`).
+
+        `totals` is ``{"estab": frame}`` as for ``predict(calibrate=)``.
+        `sampler` is a `logit_stream.assign.ConstrainedSampler`: by default
+        ``SwapMCMC()``, exact counts (the totals scaled to each group's
+        number of sets and rounded at random); ``SwapMCMC(penalty=
+        GaussianPenalty(...))`` for soft ones, ``ExactSmall`` for exact
+        draws in small groups, ``Balanced`` for the cube method. The
+        utilities are this result's (a draw's, for multiple imputation),
+        without the dimension's constants; `newdata` is streamed a batch of
+        whole groups at a time. Returns `newdata`'s rows, lazily and in
+        order, with `prefix`: whether the row is its set's draw (null for a
+        set with nothing that can be chosen). Each `seed` gives the same
+        draw whatever the batches."""
+        from .assign import _experimental, _run
+        from .calibrate import _prepare
+        _experimental()
+        case = self.case if case is None else ([case] if isinstance(case, str) else list(case))
+        lf, L, keep, _ = _prepare(self, self._frame(newdata), case, totals, "assign")
+        return _run(lf, L, keep, case, sampler, seed, prefix, None, None)
+
     def _predict(self, frame, type, prefix, case):
         xs = self._xexprs()
         b = np.asarray(self.beta)

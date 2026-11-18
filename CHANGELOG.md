@@ -32,6 +32,15 @@ New
   the constants' standard errors and `draw_parameters` draws them jointly with the
   coefficients. Robust and clustered (CRV1) variances, from each set's score net of the
   constants, work with either solver and any number of dimensions.
+- **Constrained assignment (experimental): `logit_stream.assign` and
+  `ConditionalLogitResult.sample_assignments(newdata, {"estab": totals}, sampler=...)`.** Draws
+  each choice set's alternative so that the alternatives' counts match known totals: exactly
+  (`SwapMCMC()`, Metropolis-Hastings by swaps from an assignment meeting the targets;
+  `ExactSmall()`, exact recursion for small groups), approximately (`penalty=GaussianPenalty(sd,
+  rel)`, or any function of the counts), or with the calibrated probabilities kept (`Balanced()`,
+  the cube method). Streamed by group; draws keyed by (seed, group), so they do not depend on
+  the batches. Hooks for a project's own targets, utilities and draws. Warns with
+  `logit_stream.ExperimentalWarning`, a subclass of hdfe-stream's.
 - **`predict(..., calibrate={"estab": totals})`** for the conditional logit: one dimension's
   constants solved from known totals, so that each level's predicted choices equal its total,
   given the coefficients (a draw's, under `draw_parameters`). It is for imputation where the

@@ -1,6 +1,7 @@
 """Calibrated predictions of the conditional logit with absorbed
 alternative constants: one dimension's constants solved from known totals
-(`ConditionalLogitResult.predict(calibrate=...)`).
+(`ConditionalLogitResult.predict(calibrate=...)`), and the streaming by
+group that it shares with the constrained samplers (`assign.py`).
 
 Each level's constant delta is the one at which its predicted choices,
 summed over the choice sets, equal its total, given the coefficients and
@@ -16,11 +17,11 @@ each group of levels that the sets link (a firm's establishments), so
    streaming aggregations; memory a table per set and one per level);
 3. whole groups are packed into batches of about `CALIBRATE_ROWS` rows and
    the rows partitioned by batch;
-4. each batch is solved in memory and its predictions written out.
+4. each batch is solved in memory and its results written out.
 
-The predictions come back as a lazy scan of those files in `newdata`'s
-order. When `newdata` is a single batch, it is solved in memory without
-the partitioning.
+The results come back as a lazy scan of those files in `newdata`'s order.
+When `newdata` is a single batch, it is solved in memory without the
+partitioning.
 """
 
 from __future__ import annotations
@@ -36,9 +37,9 @@ import polars as pl
 
 CALIBRATE_ROWS = 2_000_000      # rows per batch (about 0.4 GB of working memory)
 CALIBRATE_TOL = 1e-10
-CALIBRATE_MAXITER = 100     # Newton steps
+CALIBRATE_MAXITER = 100         # Newton steps
 CG_MAXITER = 1_000
-CONTRACT_ROUNDS = 100          # before Newton
+CONTRACT_ROUNDS = 100           # before Newton
 MAX_STEP = 1.0                  # the largest Newton step in a constant
 MAX_ROUNDS = 1_000              # of the label propagation
 
@@ -46,53 +47,83 @@ MAX_ROUNDS = 1_000              # of the label propagation
 def calibrated(result, frame, type, prefix, case, calibrate, batch_rows=None, workdir=None):
     """`predict` with one dimension's constants solved from totals."""
     from hdfe_stream.core.report import warn
-    from hdfe_stream.core.utils import as_lazy
+    lf, L, keep, _ = _prepare(result, frame, case, calibrate, "calibrate")
+    stats = _Stats()
 
-    from .estimator import _base_dir
-    if not isinstance(calibrate, dict) or len(calibrate) != 1:
-        raise ValueError("calibrate= is {dimension: totals}, for one dimension")
-    (name, totals), = calibrate.items()
+    def solve(df):
+        B = Batch(df, case, positive=True)
+        if B.empty:
+            return B.df.with_columns(pl.lit(None, pl.Float64).alias("__p"),
+                                     pl.lit(None, pl.Float64).alias("__u"))
+        delta, p, S = calibrate_batch(B, B.scaled(stats), stats)
+        return B.df.with_columns(
+            pl.Series("__p", np.where(S > 0, p, np.nan)).fill_nan(None),
+            pl.Series("__u", np.where(B.live, B.xb + delta[B.lev], np.nan)).fill_nan(None))
+
+    out = _stream(lf, L, case, solve, ["__u", "__p"], "calibrate", positive=True,
+                  batch_rows=batch_rows, workdir=workdir)
+    stats.report(warn)
+    col = pl.col("__u") if type == "link" else pl.col("__p")
+    return out.select(*keep, col.alias(prefix or ("xb" if type == "link" else "prob")))
+
+
+def _prepare(result, frame, case, spec_totals, what):
+    """newdata's rows with ``__row`` (their order), ``__xb`` (the utility
+    without the dimension's constants), ``__lev`` (the level's row in the
+    totals frame) and ``__t`` (its total); the number of levels; newdata's
+    columns; the dimension."""
+    from hdfe_stream.core.utils import as_lazy
+    if not isinstance(spec_totals, dict) or len(spec_totals) != 1:
+        raise ValueError(f"{what}= is {{dimension: totals}}, for one dimension")
+    (name, totals), = spec_totals.items()
     cols = result._spec["fe_cols"].get(name)
     if cols is None:
-        raise ValueError(f"calibrate: {name!r} is not an absorbed dimension of this model "
+        raise ValueError(f"{what}: {name!r} is not an absorbed dimension of this model "
                          f"({list(result._spec['fe_cols'])})")
-    tot = as_lazy(totals).collect()
-    other = [c for c in tot.columns if c not in cols]
-    if len(other) != 1:
-        raise ValueError(f"calibrate: the totals frame needs {cols} and one column of "
-                         f"totals; it has {tot.columns}")
-    batch_rows = int(batch_rows or CALIBRATE_ROWS)
-    keep = frame.collect_schema().names()
-    out_name = prefix or ("xb" if type == "link" else "prob")
-
-    # the utilities without this dimension's constants, and each row's level and total
     spec = dict(result._spec)
     spec["effects"] = [e for e in spec.get("effects", []) if e[0] != name]
     bare = replace(result, _spec=spec)
     lf = bare._predict(frame.with_row_index("__row"), "link", "__xb", case)
+    lf, L = _with_totals(lf, cols, as_lazy(totals).collect(), what)
+    return lf, L, frame.collect_schema().names(), name
+
+
+def _with_totals(lf, cols, tot, what):
+    """`lf` with each row's level (``__lev``) and total (``__t``) from `tot`,
+    and the number of levels."""
+    other = [c for c in tot.columns if c not in cols]
+    if len(other) != 1:
+        raise ValueError(f"{what}: the totals frame needs {cols} and one column of "
+                         f"totals; it has {tot.columns}")
     schema = lf.collect_schema()
     tot = tot.select(*cols, pl.col(other[0]).cast(pl.Float64).alias("__t")) \
         .with_row_index("__lev").with_columns(pl.col("__lev").cast(pl.Int64))
+    if tot.select(pl.struct(cols).is_duplicated().any()).item():
+        raise ValueError(f"{what}: the totals frame has a level more than once")
     tot = tot.with_columns(pl.col(c).cast(schema[c], strict=False) for c in cols)
-    lf = lf.join(tot.lazy(), on=cols, how="left", nulls_equal=True)
-    L = tot.height
+    return lf.join(tot.lazy(), on=cols, how="left", nulls_equal=True), tot.height
 
-    tmp = Path(tempfile.mkdtemp(prefix="logit_calibrate_", dir=_base_dir(workdir)))
+
+def _stream(lf, L, case, per_batch, outputs, what, positive, batch_rows=None, workdir=None):
+    """Run `per_batch` (a frame of whole groups -> it with the `outputs`
+    columns) over `lf` a batch at a time, through disk; the rows with their
+    outputs, lazily, in ``__row``'s order."""
+    from .estimator import _base_dir
+    batch_rows = int(batch_rows or CALIBRATE_ROWS)
+    tmp = Path(tempfile.mkdtemp(prefix=f"logit_{what}_", dir=_base_dir(workdir)))
     try:
         rows = tmp / "rows.parquet"
         lf.sink_parquet(rows, engine="streaming")
         n_rows, n_missing = pl.scan_parquet(rows).select(
             pl.len(), pl.col("__lev").is_null().sum()).collect(engine="streaming").row(0)
         if n_missing:
-            raise ValueError(f"calibrate: {n_missing:,} rows of newdata have a {name} without "
+            raise ValueError(f"{what}: {n_missing:,} rows of newdata have a level without "
                              "a total")
-        stats = _Stats()
         if n_rows <= batch_rows:
-            res = _solve(pl.read_parquet(rows), case, L, stats)
+            res = per_batch(pl.read_parquet(rows))
             shutil.rmtree(tmp, ignore_errors=True)
-            stats.report(warn)
-            return _output(res.sort("__row").lazy(), keep, type, out_name)
-        batches = _batches(rows, case, L, batch_rows)
+            return res.sort("__row").lazy()
+        batches = _batches(rows, case, L, batch_rows, positive)
         parts = tmp / "parts"
         pl.scan_parquet(rows).join(batches.lazy(), on=case, how="left", nulls_equal=True) \
             .sink_parquet(pl.PartitionBy(str(parts), key="__b", include_key=False),
@@ -100,30 +131,27 @@ def calibrated(result, frame, type, prefix, case, calibrate, batch_rows=None, wo
         rows.unlink()
         out = tmp / "out"
         out.mkdir()
+        keep = None
         for d in sorted(parts.iterdir()):
-            res = _solve(pl.read_parquet(d / "*.parquet"), case, L, stats)
-            res.select(*keep, "__row", "__u", "__p").write_parquet(out / f"{d.name}.parquet")
+            res = per_batch(pl.read_parquet(d / "*.parquet"))
+            keep = keep or [c for c in res.columns
+                            if not c.startswith("__") or c in ("__row", *outputs)]
+            res.select(keep).write_parquet(out / f"{d.name}.parquet")
             shutil.rmtree(d)
             del res
-        stats.report(warn)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     atexit.register(shutil.rmtree, tmp, True)
-    return _output(pl.scan_parquet(out / "*.parquet").sort("__row"), keep, type, out_name)
+    return pl.scan_parquet(out / "*.parquet").sort("__row")
 
 
-def _output(lf, keep, type, out_name):
-    col = pl.col("__u") if type == "link" else pl.col("__p")
-    return lf.select(*keep, col.alias(out_name))
-
-
-def _batches(rows, case, L, batch_rows):
+def _batches(rows, case, L, batch_rows, positive=True):
     """Each set's batch: whole groups of linked levels (min-label propagation
     over the live (set, level) pairs) packed into batches of about
     `batch_rows` rows. A set without a live row is its own group."""
     scan = pl.scan_parquet(rows)
-    edges = scan.filter(_live()).select(*case, "__lev")
+    edges = scan.filter(_live(positive)).select(*case, "__lev")
     lab = np.arange(L, dtype=np.int64)
     for _ in range(MAX_ROUNDS):
         labs = pl.DataFrame({"__lev": np.arange(L, dtype=np.int64), "__g": lab}).lazy()
@@ -141,7 +169,7 @@ def _batches(rows, case, L, batch_rows):
             break
         lab = new
     else:
-        raise RuntimeError("calibrate: the groups of levels did not settle in "
+        raise RuntimeError("the groups of levels did not settle in "
                            f"{MAX_ROUNDS} rounds")
     labs = pl.DataFrame({"__lev": np.arange(L, dtype=np.int64), "__g": lab}).lazy()
     sets = scan.group_by(case).agg(pl.len().alias("__n")) \
@@ -157,8 +185,9 @@ def _batches(rows, case, L, batch_rows):
     return sets.join(groups.select("__g", "__b"), on="__g").select(*case, "__b")
 
 
-def _live():
-    return (pl.col("__t") > 0) & pl.col("__xb").is_not_null() & pl.col("__xb").is_finite()
+def _live(positive=True):
+    ok = pl.col("__xb").is_not_null() & pl.col("__xb").is_finite()
+    return ok & (pl.col("__t") > 0) if positive else ok
 
 
 class _Stats:
@@ -180,54 +209,109 @@ class _Stats:
                  f"(largest step {self.step:.2g})")
 
 
-def _solve(df, case, L, stats, tol=CALIBRATE_TOL, maxiter=CALIBRATE_MAXITER):
-    """One batch of whole groups, in memory: the rows with ``__p`` (the
-    probability; null for a set with no live row) and ``__u`` (the utility
-    with the solved constant; null for a dead row)."""
-    from .alt_fe import _link, _roots
-    df = df.sort([*case, "__row"])
-    if df.height == 0:
-        return df.with_columns(pl.lit(None, pl.Float64).alias("__p"),
-                               pl.lit(None, pl.Float64).alias("__u"))
-    cid = df.select(pl.struct(case).rank("dense").alias("c"))["c"].to_numpy() - 1
-    starts = np.r_[np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]]), len(cid)] \
-        .astype(np.int64)
-    # the batch's levels, coded densely
-    used, lev = np.unique(df["__lev"].to_numpy().astype(np.int64), return_inverse=True)
-    lev = lev.astype(np.int64)
-    Lb = len(used)
-    target = np.zeros(Lb)
-    target[lev] = df["__t"].to_numpy()
-    xb = df["__xb"].fill_null(np.nan).to_numpy().astype(float)
-    live = (target[lev] > 0) & np.isfinite(xb)
-    # the groups of linked levels, and each one's number of sets
-    parent = np.arange(Lb, dtype=np.int64)
-    _link(lev[:, None], starts, live, np.ones(len(starts) - 1, bool), parent)
-    root = _roots(parent)
-    st0 = starts[:-1]
-    n_sets = np.zeros(Lb)
-    any_live = np.maximum.reduceat(live.astype(np.int64), st0) > 0
-    first_live = np.maximum.reduceat(np.where(live, lev, -1), st0)
-    np.add.at(n_sets, root[first_live[any_live]], 1.0)
-    gsum = np.zeros(Lb)
-    np.add.at(gsum, root, target)
-    pos = gsum[root] > 0
-    scale = np.where(pos, n_sets[root] / np.where(pos, gsum[root], 1.0), 0.0)
-    g = np.unique(root[lev[live]])
-    off_by = np.abs(n_sets[g] / np.where(gsum[g] > 0, gsum[g], 1.0) - 1)
-    stats.groups += len(g)
-    stats.off += int((off_by > 0.01).sum())
-    stats.off_max = max(stats.off_max, float(off_by.max(initial=0.0)))
-    target = target * scale
+class Batch:
+    """A batch of whole groups, in memory, sorted by set and, within a set,
+    by level. The levels are coded densely within the batch.
+
+    Attributes
+    ----------
+    df : polars.DataFrame
+        The rows, in this order.
+    starts : int64 array (n_sets + 1)
+        Each set's first row.
+    lev : int64 array (rows)
+        Each row's level (0 .. n_levels - 1).
+    level_id : int64 array (n_levels)
+        Each level's row in the totals frame.
+    total : float array (n_levels)
+        Each level's total, as given.
+    xb : float array (rows)
+        The utility without the dimension's constants (nan when null).
+    live : bool array (rows)
+        Rows that can be chosen: a finite utility (and, with `positive`, a
+        positive total).
+    level_group, set_group : int64 arrays
+        Each level's and each set's group of linked levels (-1: a set with
+        no live row, a level in no live row).
+    n_groups : int
+    group_sets : float array (n_groups)
+        Each group's number of sets with a live row.
+    group_key : int64 array (n_groups)
+        Each group's smallest `level_id`: its identity whatever the batches
+        (the samplers' random numbers are keyed by it).
+    """
+
+    def __init__(self, df, case, positive):
+        from .alt_fe import _link, _roots
+        self.df = df = df.sort([*case, "__lev", "__row"])
+        self.empty = df.height == 0
+        if self.empty:
+            return
+        cid = df.select(pl.struct(case).rank("dense").alias("c"))["c"].to_numpy() - 1
+        self.starts = np.r_[np.flatnonzero(np.r_[True, cid[1:] != cid[:-1]]), len(cid)] \
+            .astype(np.int64)
+        used, lev = np.unique(df["__lev"].to_numpy().astype(np.int64), return_inverse=True)
+        self.lev = lev = lev.astype(np.int64)
+        self.level_id = used
+        Lb = len(used)
+        self.total = np.zeros(Lb)
+        self.total[lev] = df["__t"].to_numpy()
+        self.xb = xb = df["__xb"].fill_null(np.nan).to_numpy().astype(float)
+        live = np.isfinite(xb)
+        if positive:
+            live &= self.total[lev] > 0
+        self.live = live
+        parent = np.arange(Lb, dtype=np.int64)
+        starts = self.starts
+        _link(lev[:, None], starts, live, np.ones(len(starts) - 1, bool), parent)
+        root = _roots(parent)
+        seen = np.zeros(Lb, bool)
+        seen[lev[live]] = True
+        roots, gi = np.unique(np.where(seen, root, -1), return_inverse=True)
+        gi = gi.astype(np.int64) - (1 if roots[0] == -1 else 0)
+        self.level_group = np.where(seen, gi, -1)
+        self.n_groups = int(self.level_group.max(initial=-1)) + 1
+        st0 = starts[:-1]
+        first_live = np.maximum.reduceat(np.where(live, lev, -1), st0)
+        self.set_group = np.where(first_live >= 0, self.level_group[np.maximum(first_live, 0)],
+                                  -1).astype(np.int64)
+        self.group_sets = np.bincount(self.set_group[self.set_group >= 0],
+                                      minlength=self.n_groups).astype(float)
+        key = np.full(self.n_groups, np.iinfo(np.int64).max)
+        ok = self.level_group >= 0
+        np.minimum.at(key, self.level_group[ok], used[ok])
+        self.group_key = key
+
+    def scaled(self, stats=None):
+        """The totals scaled within each group to its number of sets (0 for
+        a level in no live row), counting in `stats` the groups off by more
+        than 1%."""
+        g = self.level_group
+        ok = g >= 0
+        gsum = np.bincount(g[ok], weights=self.total[ok], minlength=self.n_groups)
+        if stats is not None:
+            off_by = np.abs(self.group_sets / np.where(gsum > 0, gsum, 1.0) - 1)
+            stats.groups += self.n_groups
+            stats.off += int((off_by > 0.01).sum())
+            stats.off_max = max(stats.off_max, float(off_by.max(initial=0.0)))
+        scale = np.where(gsum > 0, self.group_sets / np.where(gsum > 0, gsum, 1.0), 0.0)
+        return np.where(ok, self.total * scale[np.maximum(g, 0)], 0.0)
+
+
+def calibrate_batch(B, target, stats=None, live=None, tol=CALIBRATE_TOL,
+                    maxiter=CALIBRATE_MAXITER):
+    """The constants at which each level's predicted choices in the batch
+    equal `target` (summing to each group's number of sets): delta, the
+    rows' probabilities and their sets' normalizers (0: no live row)."""
+    live = B.live if live is None else live
     ok = target > 0
+    live = live & ok[B.lev]
     delta = np.where(ok, np.log(np.maximum(target, 1e-300)), 0.0)
-    delta, p, S, step = _newton(xb, lev, live, starts, target, ok, delta, tol, maxiter)
-    if np.max(np.abs(step), initial=0.0) >= tol:
+    delta, p, S, step = _newton(B.xb, B.lev, live, B.starts, target, ok, delta, tol, maxiter)
+    if stats is not None and np.max(np.abs(step), initial=0.0) >= tol:
         stats.unconverged += 1
         stats.step = max(stats.step, float(np.max(np.abs(step))))
-    return df.with_columns(pl.Series("__p", np.where(S > 0, p, np.nan)).fill_nan(None),
-                           pl.Series("__u", np.where(live, xb + delta[lev], np.nan))
-                           .fill_nan(None))
+    return delta, p, S
 
 
 def _probs(xb, lev, live, st0, sizes, delta):

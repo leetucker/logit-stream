@@ -72,6 +72,7 @@ model, as with several fixed effects
    .. automethod:: predict
    .. automethod:: resid
    .. automethod:: sample
+   .. automethod:: sample_assignments
 
 .. autoclass:: ConditionalFELogitResult
    :no-members:
