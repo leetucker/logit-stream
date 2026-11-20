@@ -20,11 +20,12 @@
 
 ## Experimental
 
-The mixed and nested logit are prototypes. The mixed logit: normal and
-lognormal coefficients, uncorrelated, Halton or pseudo-random draws, no
-weights, prediction or clustering beyond the chooser. The nested logit: any
-depth of nests, all covariates in the alternatives' utilities. Their
-interfaces may change.
+The mixed logit is experimental: normal and lognormal coefficients,
+uncorrelated, Halton or pseudo-random draws, no weights, prediction or
+clustering beyond the chooser. Its interface may change, and each fit warns
+with `logit_stream.ExperimentalWarning`. The nested logit (any depth of
+nests, all covariates in the alternatives' utilities) is checked against R's
+mlogit.
 
 ```{eval-rst}
 .. currentmodule:: logit_stream

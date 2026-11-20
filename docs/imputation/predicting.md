@@ -116,6 +116,12 @@ people in a rare category in places the fit did not see, needs the averaged
 ones: at the mean effect it would be undercounted, by almost a quarter at τ = 0.8
 and x'b = -3, and by half at τ = 1.5.
 
+:::{admonition} Experimental
+:class: warning
+`effects="average"` is checked against brute-force integration only, and
+warns with `logit_stream.ExperimentalWarning`.
+:::
+
 `effects="average"` averages instead:
 
 ```python

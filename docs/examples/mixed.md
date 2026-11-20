@@ -188,7 +188,7 @@ variance, are at the estimates. Each step is followed by a line search.
 (experimental), with the likelihood vectorized over rows and draws and the
 draws generated on the device.
 
-## Not in the prototype
+## Not yet available
 
 Correlated random coefficients, distributions other than the normal and
 lognormal, weights, predictions and residuals, and clustering beyond the

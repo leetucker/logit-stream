@@ -280,6 +280,11 @@ def draw(result, n, seed=None):
     beta_hat = np.asarray(result.beta, float)
     P = len(beta_hat)
     kind = info["kind"]
+    if kind == "adaptive_mnl":
+        from ._experimental import experimental
+        experimental("parameter draws of an adaptive fit with a vector of group effects (the "
+                     "multinomial logit, or random slopes)", "checked against brute-force "
+                     "integration only")
     fname, fcols = _fe_columns(spec)
     out = []
     c = _iid_factor(result, info)
@@ -622,6 +627,9 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     did not see draw from N(0, sd^2)."""
     first = results[0]
     name, keys, link = _ranef_setup(first)
+    from ._experimental import experimental
+    experimental("draws of the group effects given their rows (draw_ranef, "
+                 "draw_parameters(ranef=True))", "checked against brute-force posteriors only")
     rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
     if (first._spec or {}).get("slope_layout"):
         return _draw_ranef_many_slopes(results, rng, newdata, name, keys, chunk_cells)

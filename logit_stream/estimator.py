@@ -207,6 +207,12 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                          "terms are the logistic's)")
     from .device import resolve
     device = resolve(device)                # fails now, without CuPy or a GPU
+    from ._experimental import experimental
+    if device is not None:
+        experimental('device="cuda"', "the passes on a GPU have not been optimized for one")
+    if polars_engine == "gpu":
+        experimental('polars_engine="gpu"', "Polars' GPU engine for the passes over the source "
+                     "has not been tuned here")
     if offset is not None:
         if kind == "mlogit":
             raise ValueError("offset= is for the ordered and conditional logit: the multinomial "
@@ -259,6 +265,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             raise ValueError("random slopes run on the CPU (device='cpu')")
         slopes = (region, zs)
         random = None
+        experimental("random slopes in the conditional logit (random={grouping: covariates})",
+                     "checked against exact likelihoods and an independent Laplace "
+                     "implementation only")
     slope_terms = None
     if isinstance(random, dict) and kind in ("mlogit", "ologit"):
         # random slopes: {grouping: ["1", "x", ...]} ("1": the intercept)
@@ -278,6 +287,10 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                 raise ValueError("random slopes are fitted by adaptive quadrature "
                                  "(random_method='adaptive')")
             random_method = "adaptive"
+            experimental("random slopes (random={grouping: [terms]})",
+                         "the binary logit's checked against GLMMadaptive, the ordered and "
+                         "multinomial logit's against brute-force integration only; one "
+                         "grouping")
     if random is not None:
         if kind not in ("mlogit", "ologit"):
             raise ValueError("random= (random intercepts) is for mlogit_stream and ologit_stream")
@@ -292,6 +305,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             raise ValueError("random_method must be 'laplace', 'joint-mode' or 'adaptive'")
         if random_nodes is None and slope_terms is None:
             random_nodes = MNL_NODES if kind == "mlogit" else ADAPTIVE_NODES
+        if random_method == "adaptive" and kind == "mlogit" and slope_terms is None:
+            experimental("the multinomial logit's adaptive quadrature (random_method="
+                         "'adaptive')", "checked against brute-force integration only")
         if random_method == "adaptive":
             if len(random) != 1:
                 raise ValueError("random_method='adaptive' takes one random grouping")

@@ -4,7 +4,7 @@
 
 The conditional logit's substitution pattern is rigid: when an alternative
 gets worse, its choosers go to the others in proportion to their shares (the
-independence of irrelevant alternatives). The nested logit (experimental)
+independence of irrelevant alternatives). The nested logit
 groups alternatives that are closer substitutes into nests, within which
 their unobserved utilities are correlated, so that choosers who leave one
 alternative go disproportionately to its nest-mates. `nlogit_stream` takes

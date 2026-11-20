@@ -121,6 +121,18 @@ New
   SQUAREM acceleration; checked against R's GLMMadaptive and brute-force integration. `ranef()`,
   `varcorr()`, `predict` (and `effects="average"`), `draw_parameters` and `ranef=True` draws
   (importance resampling with the row design).
+- **`ExperimentalWarning` across the package**: each experimental feature now warns when used,
+  attributed to the caller's line -- the mixed logit, `device="cuda"`, `polars_engine="gpu"`,
+  random slopes, the multinomial logit's adaptive quadrature, the group-effect draws
+  (`draw_ranef`, `ranef=True`) and the adaptive vector fits' parameter draws,
+  `predict(effects="average")`, and constrained assignment. The class moved to
+  `logit_stream._experimental` (still exported as `logit_stream.ExperimentalWarning`).
+
+Changed
+- Random intercepts (Laplace, joint mode, and the binary and ordered logit's adaptive
+  quadrature) and the nested logit are no longer marked experimental: they are checked against
+  lme4 and ordinal, and R's mlogit. `own_covariates=` is checked against R's mlogit
+  (alternative-specific variables with alternative-specific coefficients).
 
 Fixed
 - The multinomial logit's group-intercept draws (`draw_ranef`, `draw_parameters(ranef=True)`)

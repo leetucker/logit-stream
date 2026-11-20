@@ -1,4 +1,4 @@
-"""Random intercepts for the multinomial, ordered and binary logit (experimental): one
+"""Random intercepts for the multinomial, ordered and binary logit: one
 grouping, several nested ones (random state intercepts with random PUMA
 intercepts within), optionally inside an absorbed fixed effect they all nest
 in, or two crossed ones (random PUMA and random occupation intercepts).

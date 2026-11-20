@@ -59,6 +59,14 @@ information is diagonal, because each school is in one district, so each
 district is drawn from its distribution given the slopes and the sd, using
 pieces the fit already computed.
 
+:::{admonition} Experimental
+:class: warning
+The draws of each group's effects given its rows (`ranef=True`,
+`draw_ranef`) are checked against brute-force posteriors only, and warn
+with `logit_stream.ExperimentalWarning`; so do the parameter draws of the
+multinomial logit's adaptive fit.
+:::
+
 With `ranef=True`, each draw also carries a draw of every school's
 intercept, from its distribution given the school's known students at that
 draw's parameters:

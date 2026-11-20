@@ -11,7 +11,7 @@ which are in `logit_stream.simulate`.
 | `ologit_stream`, `oprobit_stream` | ordered logit and probit, with an absorbed fixed effect (or, for the logit, random intercepts) |
 | `clogit_stream` | conditional (McFadden) logit on long-format choice data |
 | `cfelogit_stream` | Chamberlain's conditional fixed-effects logit for panels |
-| `nlogit_stream`, `mixlogit_stream` | nested and mixed logit (experimental) |
+| `nlogit_stream`, `mixlogit_stream` | nested logit; mixed logit (experimental) |
 | **[Results](results.md)** | |
 | `BinaryLogitResult`, `MultinomialLogitResult`, `OrderedLogitResult`, `OrderedProbitResult`, `ConditionalLogitResult`, `ConditionalFELogitResult`, `NestedLogitResult`, `MixedLogitResult` | one model: coefficients, standard errors, fit statistics, predictions, residuals, fixed or random effects |
 | `LogitResult` | what they share |

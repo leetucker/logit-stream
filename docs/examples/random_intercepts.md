@@ -3,7 +3,7 @@
 {download}`Download the script: random_intercepts.py <../../examples/random_intercepts.py>`
 
 `random=` fits the groups' intercepts as random effects instead of fixed
-ones (*experimental*): each group's intercepts are drawn from a normal
+ones: each group's intercepts are drawn from a normal
 distribution with mean zero and a covariance $\Sigma$ that is estimated, one
 intercept per non-base outcome level in the multinomial logit, one shift in
 the ordered logit.
@@ -248,6 +248,13 @@ fit here, which `random_method="laplace"` gives). Nine nodes are within
 `logit_stream`, not a two-level `mlogit_stream`.
 
 ### The multinomial logit
+
+:::{admonition} Experimental
+:class: warning
+The multinomial logit's adaptive quadrature is checked against brute-force
+integration only (no other library fits it), and warns with
+`logit_stream.ExperimentalWarning`.
+:::
 
 With a multinomial outcome Laplace's bias is larger, and not only
 downward. On simulated data (J = 5, 20,000 firms within 50 absorbed cells,

@@ -55,14 +55,13 @@ totals, alternatives' ids) returning log g, vectorized.
 
 from __future__ import annotations
 
-import warnings
 from types import SimpleNamespace
 
 import numba as nb
 import numpy as np
 import polars as pl
-from hdfe_stream.core.report import ExperimentalWarning as _Experimental
 
+from ._experimental import ExperimentalWarning, experimental  # noqa: F401
 from .calibrate import Batch, _stream, _with_totals, calibrate_batch
 from .draws import _mix, _uniform
 
@@ -70,18 +69,9 @@ EPS = 1e-9                  # fractional cells of the balanced sampler
 MAX_CELLS = 20_000_000      # of ExactSmall's recursion, per group
 
 
-class ExperimentalWarning(_Experimental):
-    """A logit-stream feature its authors have not yet validated.
-
-    It subclasses ``hdfe_stream.ExperimentalWarning``: filter this class to
-    silence logit-stream's experimental warnings, or that one for every
-    package built on hdfe-stream.
-    """
-
-
 def _experimental():
-    warnings.warn("constrained assignment is experimental: its samplers and their interface "
-                  "may change", ExperimentalWarning, stacklevel=3)
+    experimental("constrained assignment", "checked by exact enumeration only; its samplers "
+                 "and their interface may change")
 
 
 # ------------------------------------------------------------------- penalties

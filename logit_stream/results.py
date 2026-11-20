@@ -736,6 +736,9 @@ class MultinomialLogitResult(LogitResult):
 def _check_effects(effects, type):
     if effects not in ("mode", "average"):
         raise ValueError(f"effects must be 'mode' or 'average', got {effects!r}")
+    if effects == "average":
+        from ._experimental import experimental
+        experimental('predict(effects="average")', "checked against brute-force integration only")
     if effects == "average" and type not in ("response", "class"):
         raise ValueError('effects="average" averages probabilities: it is for type="response" '
                          'or "class" (for draws that keep each group\'s effect shared by its '
@@ -1219,6 +1222,9 @@ class ConditionalLogitResult(LogitResult):
         if effects not in ("mode", "average"):
             raise ValueError(f"effects must be 'mode' or 'average', got {effects!r}")
         if effects == "average":
+            from ._experimental import experimental
+            experimental('predict(effects="average")', "checked against brute-force "
+                         "integration only")
             if type != "response" or calibrate is not None:
                 raise ValueError('effects="average" is for type="response", without calibrate=')
             return self._average_slopes(self._frame(newdata), prefix or "prob", case)
@@ -1381,7 +1387,7 @@ class ConditionalLogitResult(LogitResult):
 
 @dataclass(kw_only=True)
 class MixedLogitResult(LogitResult):
-    """The result of `mixlogit_stream` (prototype).
+    """The result of `mixlogit_stream` (experimental).
 
     The coefficients are the fixed coefficients and the means of the random
     ones (named as the covariates; for a lognormal coefficient, the mean of
@@ -1435,15 +1441,15 @@ class MixedLogitResult(LogitResult):
                 "halton": self.halton, "seed": self.seed, "loglik_clogit": self.loglik_clogit}
 
     def predict(self, newdata: Any = None, type: str = "response"):
-        raise NotImplementedError("predictions from the mixed logit are not in the prototype")
+        raise NotImplementedError("predictions from the mixed logit are not available yet")
 
     def resid(self, newdata: Any = None):
-        raise NotImplementedError("residuals of the mixed logit are not in the prototype")
+        raise NotImplementedError("residuals of the mixed logit are not available yet")
 
 
 @dataclass(kw_only=True)
 class NestedLogitResult(ConditionalLogitResult):
-    """The result of `nlogit_stream` (prototype).
+    """The result of `nlogit_stream`.
 
     The coefficients are those of the utilities, then each nest's
     dissimilarity parameter, ``"lambda.<nest>"``, in the order of `nests=`

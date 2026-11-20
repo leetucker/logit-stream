@@ -26,8 +26,8 @@ turns the comparison into one of how each library fails. And logit-stream is
 also run with the 2,462 PUMAs absorbed as a fixed effect in place of the
 divisions (dashed in the figures): a richer model, which the in-memory
 libraries could fit only with 2,461 indicator columns per equation. And it is
-run with random PUMA intercepts in their place (dash-dotted;
-*experimental*, see [random intercepts](../examples/fixed_effects.md)): the
+run with random PUMA intercepts in their place (dash-dotted; see
+[random intercepts](../examples/random_intercepts.md)): the
 same richer model with the PUMA effects drawn from a normal distribution
 whose covariance across the outcome levels is estimated, by Laplace's
 approximation (the default; the tables also have it within fixed state

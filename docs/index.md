@@ -58,8 +58,8 @@ and one dense solve.
 - **One interface for the logit family.** Binary logit and probit,
   multinomial logit, ordered logit and probit on ordinary data; McFadden's
   conditional logit on long-format choice data with alternative-specific
-  attributes and unbalanced choice sets, and the nested and mixed logit
-  (experimental) on the same data; Chamberlain's conditional fixed-effects
+  attributes and unbalanced choice sets, and the nested logit and the
+  mixed logit (experimental) on the same data; Chamberlain's conditional fixed-effects
   logit for short panels. See the [examples](examples/index.md).
 - **Absorbed fixed effects** for the multinomial and ordered logit
   (`"y ~ x | puma"`): each level gets its own intercept for every outcome
@@ -69,9 +69,11 @@ and one dense solve.
   number through hdfe-stream), with an optional correction of the incidental-parameter
   bias. The multinomial logit absorbs any number through the equivalent Poisson
   regression.
-- **Random intercepts** (experimental) for the multinomial and ordered
-  logit, by Laplace's approximation, with nested or crossed groupings, as
-  lme4's `glmer` and ordinal's `clmm` fit them.
+- **Random intercepts** for the binary, multinomial and ordered logit, by
+  Laplace's approximation, with nested or crossed groupings, as lme4's
+  `glmer` and ordinal's `clmm` fit them, or by adaptive quadrature for one
+  grouping (experimental for the multinomial logit); and random slopes
+  (experimental). See [random intercepts](examples/random_intercepts.md).
 - **pyfixest formulas**: `C()`, `i()`, interactions, `I()` and transforms,
   multiple estimation (`csw()`, `sw()`, several outcomes), with pyfixest's own
   coefficient names and categorical coding.

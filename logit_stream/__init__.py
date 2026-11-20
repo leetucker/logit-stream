@@ -39,6 +39,7 @@ from __future__ import annotations
 from hdfe_stream.core.multcomp import bonferroni, holm
 from hdfe_stream.core.reporting import etable
 
+from ._experimental import ExperimentalWarning
 from .api import (
     cfelogit_stream,
     clogit_stream,
@@ -50,7 +51,6 @@ from .api import (
     oprobit_stream,
     probit_stream,
 )
-from .assign import ExperimentalWarning
 from .lrtest import lr_test
 from .mi import PooledEstimate, pool, pool_matrix
 from .results import (

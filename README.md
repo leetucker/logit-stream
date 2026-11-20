@@ -25,7 +25,7 @@ fit.predict("people/*.parquet").sink_parquet("imputed.parquet")   # lazily
 | `ologit_stream`, `oprobit_stream` | ordered logit and probit |
 | `clogit_stream` | conditional (McFadden) logit on long-format choice data |
 | `cfelogit_stream` | Chamberlain's conditional fixed-effects logit for panels |
-| `mixlogit_stream`, `nlogit_stream` | mixed and nested logit (prototypes) |
+| `nlogit_stream`, `mixlogit_stream` | nested logit; mixed logit (experimental) |
 
 Newton's method for a logit needs the data only through sums over rows -- the
 log-likelihood, its gradient and the information matrix -- so each step is one

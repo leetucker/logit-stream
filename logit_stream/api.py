@@ -374,7 +374,7 @@ def nlogit_stream(fml: str, data: Source, case: str | Sequence[str], alt: str,
                   weights_type: str = "aweights", offset: str | Any | None = None,
                   **options: Any):
     """Out-of-core nested logit (RU2, any depth of nests), from long-format
-    choice data as `clogit_stream` takes it (prototype).
+    choice data as `clogit_stream` takes it.
 
     Parameters
     ----------
@@ -623,7 +623,7 @@ clogit_stream.__doc__ = """Out-of-core conditional (McFadden) logit by streamed 
 
 
 mixlogit_stream.__doc__ = """Out-of-core mixed logit by streamed maximum simulated likelihood
-    (prototype: normal and lognormal coefficients, uncorrelated).
+    (experimental: normal and lognormal coefficients, uncorrelated).
 
     The conditional logit of `clogit_stream`, with the coefficients named in
     `random` varying across choosers: normal, mu + s z, or lognormal,
@@ -690,5 +690,5 @@ mixlogit_stream.__doc__ = """Out-of-core mixed logit by streamed maximum simulat
     -------
     MixedLogitResult
         `summary`, `tidy`, `confint`, `wald_test` and the other reporting
-        methods; `predict` and `resid` are not in the prototype.
+        methods; `predict` and `resid` are not available yet.
     """

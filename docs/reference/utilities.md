@@ -54,6 +54,20 @@ the completed data sets by Rubin's rules: see
    :members: se, tidy, wald_test
 ```
 
+## Experimental features
+
+Features that are checked only against brute force or their own
+definitions (no external reference), that run on a GPU path not yet
+optimized for one, or that are far less complete than other tools, warn
+with `logit_stream.ExperimentalWarning` when used, once per line of the
+calling code. It subclasses `hdfe_stream.ExperimentalWarning`; silence it
+with `warnings.filterwarnings("ignore", category=logit_stream.ExperimentalWarning)`.
+
+```{eval-rst}
+.. automodule:: logit_stream._experimental
+   :no-members:
+```
+
 ## Constrained assignment (experimental)
 
 `logit_stream.assign` draws each choice set's alternative so that the
