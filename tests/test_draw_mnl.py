@@ -87,6 +87,12 @@ def test_chunks_and_predict(fitted):
     np.testing.assert_allclose(a["re_g:1"].to_numpy(), b["re_g:1"].to_numpy(), rtol=1e-12)
     new = pl.DataFrame({"x": [0.0, 1.0], "cell": [0, 1], "g": [5, 10**6]})
     d = fit.draw_parameters(2, seed=4, ranef=True, newdata=new)
+    many = pl.DataFrame({"x": 0.0, "cell": 0, "g": np.arange(10**6, 10**6 + 500)})
+    t = [r[0].ranef().collect().sort("g") for r in
+         (fit.draw_parameters(1, seed=4, ranef=True, newdata=many),
+          fit.draw_parameters(1, seed=4, ranef=True, newdata=many.reverse()))]
+    assert t[0]["g"].equals(t[1]["g"])
+    np.testing.assert_allclose(t[0]["re_g:1"].to_numpy(), t[1]["re_g:1"].to_numpy(), rtol=1e-12)
     for r in d:
         t = r.ranef().collect()
         assert t.filter(pl.col("g") == 10**6)["n_obs"][0] == 0

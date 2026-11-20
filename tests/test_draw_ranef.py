@@ -138,6 +138,15 @@ def test_predict_and_new_groups():
     # each draw's own sd for the new groups, and its own draws
     assert sds == [d.random_effects["g"]["sd"][0] for d in draws]
     assert len({d.ranef().collect()["re_g"][0] for d in draws}) == 4
+    # the new groups' draws are the same on every call, and whatever newdata's order
+    many = pl.concat([new] + [new.with_columns(pl.col("g") + 20_000 + 7 * i) for i in range(400)])
+    t = [d.ranef().collect().sort("g")
+         for d in (fit.draw_parameters(2, seed=10, ranef=True, newdata=many)[1],
+                   fit.draw_parameters(2, seed=10, ranef=True, newdata=many)[1],
+                   fit.draw_parameters(2, seed=10, ranef=True, newdata=many.reverse())[1])]
+    for x in t[1:]:      # (the known groups' to rounding, from the threads' sums)
+        assert x["g"].equals(t[0]["g"])
+        np.testing.assert_allclose(x["re_g"].to_numpy(), t[0]["re_g"].to_numpy(), rtol=1e-12)
     # a draw of the group intercepts at the estimates: ranef() is the draw
     one = fit.draw_ranef(seed=1)
     assert not one.ranef().collect()["re_g"].equals(fit.ranef().collect()["re_g"])

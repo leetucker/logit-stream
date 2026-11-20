@@ -567,8 +567,10 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     new = None
     if newdata is not None:
         from .results import as_lazy as _lazy
-        new = (_lazy(newdata).select(keys).unique(maintain_order=True)
-               .join(table.select(keys).lazy(), on=keys, how="anti").collect())
+        # sorted, so that each new group's draw does not depend on the join's
+        # order (or on newdata's)
+        new = (_lazy(newdata).select(keys).unique()
+               .join(table.select(keys).lazy(), on=keys, how="anti").collect().sort(keys))
     out = []
     for m, res in enumerate(results):
         t = table.with_columns(pl.Series(f"re_{name}", draws[m]),
@@ -667,8 +669,10 @@ def _draw_ranef_many_mnl(results, rng, newdata, name, keys, chunk_cells):
     new = None
     if newdata is not None:
         from .results import as_lazy as _lazy
-        new = (_lazy(newdata).select(keys).unique(maintain_order=True)
-               .join(table.select(keys).lazy(), on=keys, how="anti").collect())
+        # sorted, so that each new group's draw does not depend on the join's
+        # order (or on newdata's)
+        new = (_lazy(newdata).select(keys).unique()
+               .join(table.select(keys).lazy(), on=keys, how="anti").collect().sort(keys))
     rcols = [f"re_{name}:{lv}" for lv in levels]
     scols = [f"sd_{name}:{lv}" for lv in levels]
     out = []

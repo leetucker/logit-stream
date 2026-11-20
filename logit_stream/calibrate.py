@@ -96,7 +96,9 @@ def _with_totals(lf, cols, tot, what):
         raise ValueError(f"{what}: the totals frame needs {cols} and one column of "
                          f"totals; it has {tot.columns}")
     schema = lf.collect_schema()
-    tot = tot.select(*cols, pl.col(other[0]).cast(pl.Float64).alias("__t")) \
+    # the levels numbered in their values' order, not the frame's, so that
+    # draws keyed by a level's number do not depend on how `tot` was built
+    tot = tot.select(*cols, pl.col(other[0]).cast(pl.Float64).alias("__t")).sort(cols) \
         .with_row_index("__lev").with_columns(pl.col("__lev").cast(pl.Int64))
     if tot.select(pl.struct(cols).is_duplicated().any()).item():
         raise ValueError(f"{what}: the totals frame has a level more than once")

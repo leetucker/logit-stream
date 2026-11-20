@@ -164,6 +164,11 @@ def test_draws_do_not_depend_on_the_batches():
     assert a["assigned"].to_list() == b["assigned"].to_list()
     c = _draws(A.SwapMCMC(sweeps=20), G=200, seed=6)
     assert a["assigned"].to_list() != c["assigned"].to_list()
+    # nor on the order of the totals' rows
+    data, totals = _firms(200)
+    d = A.sample_assignments(data, totals.reverse(), case="case", alt="alt", utility="u",
+                             sampler=A.SwapMCMC(sweeps=20), seed=5).collect()
+    assert d["assigned"].to_list() == a["assigned"].to_list()
     for s in (A.Balanced(), A.ExactSmall(), A.SwapMCMC(penalty=A.GaussianPenalty(), sweeps=20)):
         x = _draws(s, G=200, seed=5)
         y = _draws(s, G=200, seed=5, batch_rows=100)
