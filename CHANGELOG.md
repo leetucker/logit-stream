@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 New
 - **`random_method="adaptive"`: adaptive Gauss-Hermite quadrature for one scalar random

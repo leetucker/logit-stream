@@ -162,4 +162,3 @@ def test_location_with_an_intercept():
     for j in (1, 2):
         want = b[f"{j}:Intercept"] + b[f"{j}:x"] * X[:, 1] + b[f"{j}:x2"] * X[:, 2]
         np.testing.assert_allclose(E[:, j], want, rtol=1e-12)
-
