@@ -110,12 +110,15 @@ def average_scalar(eta, sd, prob):
                                                                                P, w)
 
 
-@nb.njit(parallel=True, cache=True)
+# serial: it runs inside Polars' map_batches, which calls it from several
+# threads at once, and numba's workqueue threading layer (macOS without
+# OpenMP or TBB) aborts the process on concurrent parallel launches
+@nb.njit(cache=True)
 def _softmax_average(full, V, Z, w, out):
     n, J = full.shape
     d = J - 1
     Q = Z.shape[0]
-    for i in nb.prange(n):
+    for i in range(n):
         bad = False
         for j in range(J):
             if np.isnan(full[i, j]):
