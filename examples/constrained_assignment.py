@@ -1,15 +1,16 @@
 """Constrained assignment (experimental): imputing workers' establishments
-so that the establishments' imputed employment matches their reported
+so that the establishments' imputed employment matches their known
 totals, exactly or approximately.
 
 Workers choose among their firm's establishments by commuting distance and
 each establishment's attractiveness. The model is fitted on firms whose
 workers' establishments are known; in other firms only each
-establishment's total employment is reported. Each imputation draws the
+establishment's total employment is known. Each imputation draws the
 parameters, then each worker's establishment, four ways:
 
   calibrated  independent draws from the calibrated probabilities
-              (predict(calibrate=)): the counts match the totals only on average;
+              (predict(type="draw", calibrate=)): the counts match the totals
+              only on average;
   exact       SwapMCMC(): the model's distribution given the counts equal
               the totals;
   soft        SwapMCMC(penalty=GaussianPenalty(...)): the counts near the
@@ -17,8 +18,10 @@ parameters, then each worker's establishment, four ways:
   balanced    Balanced(): the calibrated probabilities, with the counts
               equal to the totals (the cube method).
 
-Twice: with the true counts reported, and with the reported totals off by
-about 1 + 5%.
+Twice: with the totals equal to the true counts, and with totals measured
+with error, off by about 1 + 5%. Finally, each method's mean commute is pooled over the
+imputations by Rubin's rules, as a statistic of the whole file (no sampling
+variance), so that its standard error is the imputation's alone.
 
     python examples/constrained_assignment.py
 """
@@ -29,7 +32,7 @@ import numpy as np
 import polars as pl
 
 import logit_stream
-from logit_stream import clogit_stream
+from logit_stream import clogit_stream, pool
 from logit_stream.assign import Balanced, GaussianPenalty, SwapMCMC
 
 warnings.filterwarnings("ignore", category=logit_stream.ExperimentalWarning)
@@ -59,9 +62,10 @@ train, impute = firms(2000, 0), firms(500, 10_000)
 fit = clogit_stream("chosen ~ dist | estab", train, case="case", verbose=False)
 print(f"distance coefficient {fit.beta[0]:.3f} (se {np.sqrt(fit.vcov[0, 0]):.3f}; truth -1.2)")
 
-true_n = impute.group_by("estab").agg(pl.col("chosen").sum().cast(pl.Float64).alias("n"))
+true_n = (impute.group_by("estab").agg(pl.col("chosen").sum().cast(pl.Float64).alias("n"))
+          .sort("estab"))
 noise = rng.normal(size=true_n.height)
-reported = true_n.with_columns(
+noisy = true_n.with_columns(
     (pl.col("n") * (1 + 0.05 * pl.Series(noise)) + rng.normal(size=true_n.height))
     .round().clip(0).alias("n"))
 newdata = impute.drop("chosen")
@@ -69,23 +73,16 @@ truth = impute.filter(pl.col("chosen") == 1).select("case", pl.col("estab").alia
 
 
 def independent(fit_m, totals, seed):
-    """One draw per worker from the calibrated probabilities: the row where
-    the set's cumulative probability passes a uniform."""
-    p = fit_m.predict(newdata, calibrate={"estab": totals}).lazy()
-    cases = newdata.select(pl.col("case").unique(maintain_order=True))
-    cases = cases.with_columns(pl.Series("u", np.random.default_rng(seed).random(cases.height)))
-    prob = pl.col("prob").fill_null(0)
-    cum = prob.cum_sum().over("case")
-    return p.join(cases.lazy(), on="case").with_columns(
-        ((cum - prob < pl.col("u") * prob.sum().over("case")) &
-         (cum >= pl.col("u") * prob.sum().over("case")) & (prob > 0)).alias("assigned")) \
-        .select("case", "estab", "dist", "assigned").collect()
+    """One draw per worker from the calibrated probabilities, independently."""
+    return fit_m.predict(newdata, type="draw", seed=seed, prefix="assigned",
+                         calibrate={"estab": totals}).select(
+        "case", "estab", "dist", pl.col("assigned").fill_null(False)).collect()
 
 
 def summary(draws, totals):
     """Over the imputations: the share of workers at their true
     establishment, the mean commute, and the establishments' mean absolute
-    gap between imputed employment and the reported totals and the truth."""
+    gap between imputed employment and the totals and the truth."""
     rows = []
     for d in draws:
         a = d.filter("assigned")
@@ -113,8 +110,9 @@ def draw(name, fit_m, totals, m):
 M = 5
 params = fit.draw_parameters(M, seed=1)
 true_commute = impute.filter(pl.col("chosen") == 1)["dist"].mean()
+commutes = []                 # each imputation's mean commute, for pooling
 for label, totals in [("totals = the true counts", true_n),
-                      ("totals reported with error", reported)]:
+                      ("totals measured with error", noisy)]:
     print(f"\n{label} (true mean commute {true_commute:.3f}); means over {M} imputations")
     print(f"{'':12s} {'P(true estab)':>14s} {'mean commute':>13s} "
           f"{'|n - total|':>12s} {'|n - true n|':>13s}")
@@ -122,3 +120,12 @@ for label, totals in [("totals = the true counts", true_n),
         draws = [draw(name, f, totals, m) for m, f in enumerate(params)]
         hit, commute, gap_total, gap_true = summary(draws, totals)
         print(f"{name:12s} {hit:14.3f} {commute:13.3f} {gap_total:12.2f} {gap_true:13.2f}")
+        commutes += [{"totals": label, "method": name, "imputation": m,
+                      "estimate": d.filter("assigned")["dist"].mean()}
+                     for m, d in enumerate(draws)]
+
+# the mean commute of the imputed file, pooled over the imputations as a statistic of
+# the whole file: no sampling variance (se=None), so its standard error is the imputation's
+pooled = pool(pl.DataFrame(commutes), se=None, by=["totals", "method"])
+print(f"\nmean commute, pooled over {M} imputations (truth {true_commute:.3f})")
+print(pooled.select("totals", "method", "estimate", "se", "ci_low", "ci_high"))

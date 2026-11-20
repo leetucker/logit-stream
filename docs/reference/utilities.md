@@ -22,11 +22,43 @@
 .. currentmodule:: logit_stream
 ```
 
+## The likelihood-ratio test
+
+```{eval-rst}
+.. automodule:: logit_stream.lrtest
+   :no-members:
+
+.. currentmodule:: logit_stream
+
+.. autofunction:: lr_test
+```
+
+## Multiple imputation
+
+`predict(type="draw", seed=m)` draws each row's outcome for imputation (see
+each result's `predict`); `pool` and `pool_matrix` combine the analyses of
+the completed data sets by Rubin's rules: see
+[multiple imputation](../imputation/multiple_imputation.md).
+
+```{eval-rst}
+.. automodule:: logit_stream.mi
+   :no-members:
+
+.. currentmodule:: logit_stream
+
+.. autofunction:: pool
+
+.. autofunction:: pool_matrix
+
+.. autoclass:: PooledEstimate
+   :members: se, tidy, wald_test
+```
+
 ## Constrained assignment (experimental)
 
 `logit_stream.assign` draws each choice set's alternative so that the
 alternatives' counts match known totals, exactly or approximately: see
-[the example](../examples/constrained_assignment.md). Its functions warn
+[the example](../imputation/known_totals.md). Its functions warn
 with `logit_stream.ExperimentalWarning`, a subclass of hdfe-stream's.
 
 ```{eval-rst}

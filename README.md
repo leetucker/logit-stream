@@ -41,6 +41,15 @@ reporting: `summary()`, `tidy()`, `summary_dict()`, `summary_json()`,
 `resid()`, `sample()` and `fixef()` frames. Estimates and standard errors
 match statsmodels and scikit-learn (see `tests/`).
 
+For imputation, `predict()` streams probabilities, or draws of the outcome
+(`type="draw"`), for files of any size. `draw_parameters()` and
+`draw_ranef()` draw the parameters and each group's effect for proper
+multiple imputation, and `pool()` and `pool_matrix()` combine the analyses
+of the completed data by Rubin's rules. For a choice among alternatives
+whose totals are known, `predict(calibrate=)` solves the alternatives'
+constants from the totals, and `logit_stream.assign` (experimental) draws
+assignments that match them exactly or approximately.
+
 Documentation: <https://leetucker.github.io/logit-stream/> (build locally with
 `pip install -e ".[docs]"` and `sphinx-build -b html docs docs/_build/html`).
 `examples/` has a runnable script for each page of its guide, on simulated

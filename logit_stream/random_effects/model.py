@@ -759,14 +759,41 @@ class _RandomEffects(_SigmaMixin):
             out.append(np.where(f.free, np.sqrt(v), 0.0))
         return out
 
+    def conditional_cov(self, theta):
+        """Each random grouping's effects' covariance given the data, the
+        coefficients, the fixed effect and Sigma, (G, m, m) per grouping (0
+        for a level that is not free): the full blocks whose diagonal
+        `conditional_sd` reports. The adaptive quadrature's own, where it
+        set them (`cov_override`, or `sd_override` for a scalar effect)."""
+        if getattr(self, "cov_override", None) is not None:
+            return self.cov_override
+        if getattr(self, "sd_override", None) is not None:
+            return [(s * s)[:, :, None] if s.shape[1] == 1
+                    else np.einsum("gi,ij->gij", s * s, np.eye(s.shape[1]))
+                    for s in self.sd_override]
+        D = self._cache
+        if D is None or not np.array_equal(D.theta, theta):
+            return [np.full((f.G, self.m, self.m), np.nan) for f in self.random]
+        _, F = self._random_factor(D.Haa, D.ga, D, [f.Lam for f in self.random])
+        own = self._cov(F)[0]
+        out = []
+        for f, C in zip(self.random, own):
+            free = f.free[:, :, None] & f.free[:, None, :]
+            out.append(np.where(free, C, 0.0))
+        return out
+
     def result_spec(self, theta):
         """Each random grouping's predicted effects (`ranef`), the fixed
         effect's (`fixef`), and how `predict` combines them."""
         levels = self.p0.levels
         mlogit = self.model.kind == "mlogit"
-        out = {"ranef": {}, "effects": []}
+        out = {"ranef": {}, "effects": [], "ranef_cov": {}}
         sds = self.conditional_sd(theta)
-        for f, sd in zip(self.random, sds):
+        covs = self.conditional_cov(theta)
+        for f, sd, C in zip(self.random, sds, covs):
+            # (each kept group's conditional covariance, in the table's rows, for
+            # predict(effects="average"))
+            out["ranef_cov"][f.name] = np.ascontiguousarray(C[f.keep])
             A = self._theta_of(theta, f)
             vals = ({f"re_{f.name}:{lv}": pl.Series(A[:, j]) for j, lv in enumerate(levels)}
                     if mlogit else {f"re_{f.name}": pl.Series(A[:, 0])})

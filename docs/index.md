@@ -83,6 +83,14 @@ and one dense solve.
   `summary_dict()`/`summary_json()`, `confint()` (pointwise or simultaneous),
   `wald_test()`, `with_vcov()`, `etable()`, and lazy `predict()`, `resid()`,
   `sample()` and `fixef()` frames.
+- **Imputation**: lazy `predict()` probabilities, or draws of the outcome
+  (`type="draw"`), for files of any size; draws of the parameters and of
+  each group's effect (`draw_parameters`, `draw_ranef`) for proper
+  multiple imputation; Rubin's-rules pooling of the analyses (`pool`,
+  `pool_matrix`); and, for choices among alternatives with known totals,
+  calibration of their constants (`predict(calibrate=)`) and constrained
+  assignment (experimental). See the [imputation](imputation/index.md)
+  section.
 - **Out of core**: one pass over the source writes the evaluated design as
   blocks; every Newton step reads them, a block ahead in a background thread.
   `storage="memory"` keeps them in memory instead; `dtype="float32"` halves
@@ -142,6 +150,7 @@ brings pyfixest), Polars, NumPy, SciPy, numba and PyArrow.
 :caption: Guide
 
 examples/index
+imputation/index
 how_it_works
 resources
 ```

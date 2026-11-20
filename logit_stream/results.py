@@ -27,6 +27,7 @@ import polars as pl
 from hdfe_stream.core.results_base import RegressionMulti, RegressionResult
 from scipy import special
 
+from .mi import categorical
 from .models import LINKS
 from .store import check_source
 
@@ -559,7 +560,8 @@ class MultinomialLogitResult(LogitResult):
         return B.T
 
     def predict(self, newdata: Any = None, type: str = "response",
-                prefix: str | None = None) -> pl.LazyFrame:
+                prefix: str | None = None, seed: int = 0,
+                id: str | list | None = None, effects: str = "mode") -> pl.LazyFrame:
         """Predictions as a lazy frame: `newdata` (default: the fit's source,
         every row) with columns added.
 
@@ -570,20 +572,51 @@ class MultinomialLogitResult(LogitResult):
             (with its fixed effect).
         type="class"
             The most probable level, ``predicted``.
+        type="draw"
+            A level drawn from the row's probabilities, ``drawn``: for
+            imputation (with the parameters of a `draw_parameters` draw,
+            for multiple imputation). The draw's uniform depends only on
+            `seed` and the row's identifier, the column(s) `id` (default:
+            the row's position in `newdata`), not on the batches; see
+            `logit_stream.mi`.
 
         A row with a null or non-finite covariate, or a fixed-effect level
         the fit did not estimate, gets nulls. `prefix` renames the columns'
-        prefix (or, for "class", the column).
-        """
-        if type not in ("response", "link", "class"):
-            raise ValueError(f"type must be 'response', 'link' or 'class', got {type!r}")
-        frame = self._frame(newdata)
-        return self._predict(frame, type, prefix)
+        prefix (or, for "class" and "draw", the column).
 
-    def _predict(self, frame, type, prefix):
+        `effects` says how a random intercept enters a probability:
+        ``"mode"`` (the default) at the group's predicted effect, its
+        conditional mode (0, the mean, for a group the fit did not see);
+        ``"average"`` averaged over the effect's distribution: the group's
+        conditional one given its rows (normal, with the mode as mean and
+        the conditional covariance, whose diagonal `ranef` reports as
+        ``sd_<grouping>``), or for a group the fit did not see the prior,
+        N(0, Sigma). The averaged probability is the expected share of
+        such rows across groups like the row's, which the probability at
+        the mean effect is not: it is too extreme, by more the larger
+        Sigma. For "response" and "class" (the most probable level of the
+        averaged probabilities), by Gauss-Hermite quadrature.
+        """
+        if type not in ("response", "link", "class", "draw"):
+            raise ValueError(f"type must be 'response', 'link', 'class' or 'draw', got {type!r}")
+        _check_effects(effects, type)
+        frame = self._frame(newdata)
+        if effects == "average":
+            return self._predict(frame, type, prefix, average=True)
+        if type != "draw":
+            return self._predict(frame, type, prefix)
+        from .mi import uniform_expr, with_ids
+        frame, ids, drop = with_ids(frame, id)
+        return self._predict(frame, type, prefix, u=uniform_expr(ids, seed)).drop(drop)
+
+    def _predict(self, frame, type, prefix, u=None, average=False):
         xs = self._xexprs()
         k = len(xs)
         frame, fe = self._with_fe(frame)
+        gnames, covs = [], []
+        if average:
+            from ._average import spread_inputs
+            frame, gnames, covs = spread_inputs(self, frame)
         B = self._B()
         levels = self.levels
         if type == "response":
@@ -593,7 +626,7 @@ class MultinomialLogitResult(LogitResult):
             pre = prefix or "xb"
             dtype = _prob_dtype(levels[1:], pre)
         else:
-            pre = prefix or "predicted"
+            pre = prefix or ("drawn" if type == "draw" else "predicted")
             lv_series = pl.Series(levels)
             dtype = pl.Struct({pre: lv_series.dtype})
 
@@ -614,26 +647,36 @@ class MultinomialLogitResult(LogitResult):
                 E[~np.isfinite(E)] = np.nan
                 out = {f"{pre}_{_level_name(lv)}": E[:, j] for j, lv in enumerate(levels[1:])}
                 return pl.DataFrame(out).fill_nan(None).to_struct(s.name)
-            with np.errstate(invalid="ignore"):
-                m = np.max(full, axis=1, keepdims=True)
-                e = np.exp(full - m)
-                P = e / e.sum(axis=1, keepdims=True)
+            if average:
+                from ._average import average_softmax, row_covariance
+                P = average_softmax(full, row_covariance(df, gnames, covs, X, len(levels)))
+            else:
+                with np.errstate(invalid="ignore"):
+                    m = np.max(full, axis=1, keepdims=True)
+                    e = np.exp(full - m)
+                    P = e / e.sum(axis=1, keepdims=True)
             if type == "response":
                 out = {f"{pre}_{_level_name(lv)}": P[:, j] for j, lv in enumerate(levels)}
                 return pl.DataFrame(out).fill_nan(None).to_struct(s.name)
-            ok = ~np.isnan(P).any(axis=1)
-            idx = np.where(ok, np.nanargmax(np.where(ok[:, None], P, 0), axis=1), 0)
+            if type == "draw":
+                idx = categorical(P, df["__ls_u"].to_numpy())
+                ok = idx >= 0
+                idx = np.maximum(idx, 0)
+            else:
+                ok = ~np.isnan(P).any(axis=1)
+                idx = np.where(ok, np.nanargmax(np.where(ok[:, None], P, 0), axis=1), 0)
             col = pl.Series(pre, [levels[i] for i in idx], dtype=lv_series.dtype)
             col = pl.select(pl.when(pl.Series(ok)).then(col).otherwise(None)).to_series()
             return pl.DataFrame({pre: col}).to_struct(s.name)
 
         inputs = [ex.alias(f"__ls_p{j}") for j, (_, ex) in enumerate(xs)] + \
-                 [pl.col(c) for c in fe]
+                 [pl.col(c) for c in fe] + ([u.alias("__ls_u")] if u is not None else []) \
+            + [pl.col(g) for g in gnames]
         pred = (pl.struct(inputs) if inputs else pl.struct(pl.lit(0.0).alias("__ls_none")))
         tmp = "__ls_pred"
         return (frame.with_columns(pred.map_batches(fn, return_dtype=dtype, is_elementwise=True)
                                    .alias(tmp))
-                     .drop(fe).unnest(tmp))
+                     .drop(*fe, *gnames).unnest(tmp))
 
     def resid(self) -> pl.LazyFrame:
         """The estimation sample, lazily: `row_id` (the row's position in the
@@ -662,6 +705,15 @@ class MultinomialLogitResult(LogitResult):
         if off is not None:
             need |= set(off.meta.root_names())
         return [pl.col(c) for c in sorted(need & names) if c not in ("row_id", self.depvar)]
+
+
+def _check_effects(effects, type):
+    if effects not in ("mode", "average"):
+        raise ValueError(f"effects must be 'mode' or 'average', got {effects!r}")
+    if effects == "average" and type not in ("response", "class"):
+        raise ValueError('effects="average" averages probabilities: it is for type="response" '
+                         'or "class" (for draws that keep each group\'s effect shared by its '
+                         'rows, use draw_parameters(ranef=True, newdata=...))')
 
 
 # --------------------------------------------------------------------------
@@ -704,19 +756,35 @@ class OrderedLogitResult(LogitResult):
         return np.r_[0.0, c] if self.fe_names else c
 
     def predict(self, newdata: Any = None, type: str = "response",
-                prefix: str | None = None) -> pl.LazyFrame:
+                prefix: str | None = None, seed: int = 0,
+                id: str | list | None = None, effects: str = "mode") -> pl.LazyFrame:
         """Predictions as a lazy frame, as `MultinomialLogitResult.predict`:
         ``type="response"`` the probability of each level (``prob_<level>``),
         ``"link"`` the linear predictor x'b (with the fixed effect),
-        ``"class"`` the most probable level."""
-        if type not in ("response", "link", "class"):
-            raise ValueError(f"type must be 'response', 'link' or 'class', got {type!r}")
-        return self._predict(self._frame(newdata), type, prefix)
+        ``"class"`` the most probable level, ``"draw"`` a level drawn from
+        the row's probabilities (``drawn``; `seed` and `id` as there).
+        `effects` as there: ``"average"`` averages the probabilities over
+        the random intercept's distribution."""
+        if type not in ("response", "link", "class", "draw"):
+            raise ValueError(f"type must be 'response', 'link', 'class' or 'draw', got {type!r}")
+        _check_effects(effects, type)
+        frame = self._frame(newdata)
+        if effects == "average":
+            return self._predict(frame, type, prefix, average=True)
+        if type != "draw":
+            return self._predict(frame, type, prefix)
+        from .mi import uniform_expr, with_ids
+        frame, ids, drop = with_ids(frame, id)
+        return self._predict(frame, type, prefix, u=uniform_expr(ids, seed)).drop(drop)
 
-    def _predict(self, frame, type, prefix):
+    def _predict(self, frame, type, prefix, u=None, average=False):
         xs = self._xexprs()
         k = len(xs)
         frame, fe = self._with_fe(frame)
+        gnames, covs = [], []
+        if average:
+            from ._average import spread_inputs
+            frame, gnames, covs = spread_inputs(self, frame)
         b = np.asarray(self.beta)[:k]
         cuts = self.cutpoints
         levels = self.levels
@@ -727,7 +795,7 @@ class OrderedLogitResult(LogitResult):
             pre = prefix or "xb"
             dtype = pl.Struct({pre: pl.Float64})
         else:
-            pre = prefix or "predicted"
+            pre = prefix or ("drawn" if type == "draw" else "predicted")
             lv_series = pl.Series(levels)
             dtype = pl.Struct({pre: lv_series.dtype})
 
@@ -745,22 +813,38 @@ class OrderedLogitResult(LogitResult):
                 eta = eta + df["__ls_off"].to_numpy().astype(float)
             if type == "link":
                 return pl.DataFrame({pre: eta}).fill_nan(None).to_struct(s.name)
-            cdf = cdf_fn(cuts[None, :] - eta[:, None])
-            cdf = np.column_stack([np.zeros(len(eta)), cdf, np.ones(len(eta))])
-            P = np.diff(cdf, axis=1)
+            def probs(e):
+                c = cdf_fn(cuts - e[..., None])
+                c = np.concatenate([np.zeros(c.shape[:-1] + (1,)), c,
+                                    np.ones(c.shape[:-1] + (1,))], axis=-1)
+                return np.diff(c, axis=-1)
+
+            if average:
+                from ._average import average_scalar, row_covariance
+                sd = np.sqrt(row_covariance(df, gnames, covs, X, 1)[:, 0, 0])
+                with np.errstate(invalid="ignore"):
+                    P = average_scalar(eta, sd, probs)
+            else:
+                P = probs(eta)
             P[np.isnan(eta)] = np.nan
             if type == "response":
                 return pl.DataFrame({f"{pre}_{_level_name(lv)}": P[:, j]
                                      for j, lv in enumerate(levels)}).fill_nan(None) \
                          .to_struct(s.name)
-            ok = ~np.isnan(eta)
-            idx = np.where(ok, np.argmax(np.where(ok[:, None], P, 0), axis=1), 0)
+            if type == "draw":
+                idx = categorical(P, df["__ls_u"].to_numpy())
+                ok = idx >= 0
+                idx = np.maximum(idx, 0)
+            else:
+                ok = ~np.isnan(eta)
+                idx = np.where(ok, np.argmax(np.where(ok[:, None], P, 0), axis=1), 0)
             col = pl.Series(pre, [levels[i] for i in idx], dtype=lv_series.dtype)
             col = pl.select(pl.when(pl.Series(ok)).then(col).otherwise(None)).to_series()
             return pl.DataFrame({pre: col}).to_struct(s.name)
 
         inputs = [ex.alias(f"__ls_p{j}") for j, (_, ex) in enumerate(xs)] + \
-                 [pl.col(c) for c in fe] + ([off.alias("__ls_off")] if off is not None else [])
+                 [pl.col(c) for c in fe] + ([off.alias("__ls_off")] if off is not None else []) \
+            + ([u.alias("__ls_u")] if u is not None else []) + [pl.col(g) for g in gnames]
         pred = pl.struct(inputs) if inputs else pl.struct(pl.lit(0.0).alias("__ls_none"))
         if not xs and not fe:
             # no covariates: x'b = 0 for every row; the function still runs
@@ -768,7 +852,7 @@ class OrderedLogitResult(LogitResult):
         tmp = "__ls_pred"
         return (frame.with_columns(pred.map_batches(fn, return_dtype=dtype, is_elementwise=True)
                                    .alias(tmp))
-                     .drop(fe).unnest(tmp))
+                     .drop(*fe, *gnames).unnest(tmp))
 
     def resid(self) -> pl.LazyFrame:
         """The estimation sample, lazily: `row_id`, the outcome, ``xb``, each
@@ -880,14 +964,19 @@ class BinaryLogitResult(OrderedLogitResult):
         """The one cutpoint, minus the intercept (0 with a fixed effect)."""
         return np.array([0.0 if self.fe_names else -float(self.beta[0])])
 
-    def _linear(self, frame, extra=()):
+    def _linear(self, frame, extra=(), average=False):
         """`frame` with the linear predictor's parts as columns: ``xb``
         (covariates and intercept), ``eta`` (xb, the fixed effect and the
         offset), and the fixed effect ``fe_<name>``, null where it is not
-        estimated."""
+        estimated; with `average`, also ``__ls_sd``, the sd of the row's
+        random effect (its group's conditional one, or the prior's)."""
         xs = self._xexprs()
         k = len(xs)
         frame, fe = self._with_fe(frame)
+        gnames, covs = [], []
+        if average:
+            from ._average import spread_inputs
+            frame, gnames, covs = spread_inputs(self, frame)
         beta = np.asarray(self.beta, dtype=float)
         icpt = float(beta[0]) if self.coefnames and self.coefnames[0] == "Intercept" else 0.0
         b = beta[1:] if self.coefnames and self.coefnames[0] == "Intercept" else beta
@@ -896,6 +985,8 @@ class BinaryLogitResult(OrderedLogitResult):
         fields = {"xb": pl.Float64, "eta": pl.Float64}
         if fname:
             fields[fname] = pl.Float64
+        if average:
+            fields["__ls_sd"] = pl.Float64
 
         def fn(s: pl.Series) -> pl.Series:
             df = s.struct.unnest()
@@ -912,37 +1003,78 @@ class BinaryLogitResult(OrderedLogitResult):
                     if kind == "fixed":
                         cols[fname] = df[df.columns[k + at]].to_numpy().astype(np.float64)
                     at += len(values)
+            if average:
+                from ._average import row_covariance
+                cols["__ls_sd"] = np.sqrt(row_covariance(df, gnames, covs, X, 1)[:, 0, 0])
             return pl.DataFrame(cols).fill_nan(None).to_struct(s.name)
 
         inputs = [ex.alias(f"__ls_p{j}") for j, (_, ex) in enumerate(xs)] + \
-                 [pl.col(c) for c in fe] + ([off.alias("__ls_off")] if off is not None else [])
+                 [pl.col(c) for c in fe] + ([off.alias("__ls_off")] if off is not None else []) \
+            + [pl.col(g) for g in gnames]
         pred = pl.struct(inputs) if inputs else pl.struct(pl.lit(0.0).alias("__ls_none"))
         if not xs and not fe:
             k = 0
         tmp = "__ls_lin"
         return (frame.with_columns(pred.map_batches(fn, return_dtype=pl.Struct(fields),
                                                     is_elementwise=True).alias(tmp))
-                     .drop(fe).unnest(tmp))
+                     .drop(*fe, *gnames).unnest(tmp))
 
     def predict(self, newdata: Any = None, type: str = "link",
-                name: str = "prediction") -> pl.LazyFrame:
+                name: str = "prediction", seed: int = 0,
+                id: str | list | None = None, effects: str = "mode") -> pl.LazyFrame:
         """Predictions on new data, or on the source, as a lazy frame:
         `newdata` with one column added, ``name``: the linear predictor
         (``type="link"``, with the fixed effect and the offset), the
-        probability that the outcome is 1 (``"response"``), or the more
-        probable outcome, 0 or 1 (``"class"``). A row whose fixed-effect
-        level was not estimated, or with a null covariate, gets null."""
-        if type not in ("link", "response", "class"):
-            raise ValueError(f"type must be 'link', 'response' or 'class', got {type!r}")
-        out = self._linear(self._frame(newdata))
+        probability that the outcome is 1 (``"response"``), the more
+        probable outcome, 0 or 1 (``"class"``), or an outcome drawn from
+        the probability (``"draw"``: 1 where a uniform falls below it, for
+        imputation; the uniform depends only on `seed` and the row's
+        identifier, the column(s) `id`, default the row's position, not on
+        the batches; see `logit_stream.mi`). A row whose fixed-effect level
+        was not estimated, or with a null covariate, gets null. `effects`:
+        with random intercepts, ``"mode"`` (the default) puts the group's
+        predicted effect in the probability, ``"average"`` averages the
+        probability over the effect's distribution (as
+        `MultinomialLogitResult.predict`), for "response" and "class"."""
+        if type not in ("link", "response", "class", "draw"):
+            raise ValueError(f"type must be 'link', 'response', 'class' or 'draw', got {type!r}")
+        _check_effects(effects, type)
+        frame = self._frame(newdata)
+        drop = []
+        if type == "draw":
+            from .mi import uniform_expr, with_ids
+            frame, ids, drop = with_ids(frame, id)
+        average = effects == "average"
+        out = self._linear(frame, average=average)
         eta = pl.col("eta")
+        if average:
+            from ._average import average_scalar
+            cdf = LINKS["probit" if self.family == "probit" else "logit"].cdf
+
+            def avg(s: pl.Series) -> pl.Series:
+                d = s.struct.unnest()
+                e = d["eta"].fill_null(np.nan).to_numpy()
+                with np.errstate(invalid="ignore"):
+                    p = average_scalar(e, d["__ls_sd"].fill_null(0.0).to_numpy(), cdf)
+                return pl.Series(s.name, p).fill_nan(None)
+
+            mu = pl.struct("eta", "__ls_sd").map_batches(avg, return_dtype=pl.Float64,
+                                                          is_elementwise=True)
+            drop = [*drop, "__ls_sd"]
+        else:
+            mu = self._mu(eta)
         if type == "link":
             val = eta
         elif type == "response":
-            val = self._mu(eta)
+            val = mu
+        elif type == "draw":
+            val = pl.when(eta.is_null()).then(None).otherwise(
+                (uniform_expr(ids, seed) < self._mu(eta)).cast(pl.Int64))
+        elif average:
+            val = pl.when(eta.is_null()).then(None).otherwise((mu > 0.5).cast(pl.Int64))
         else:
             val = pl.when(eta.is_null()).then(None).otherwise((eta > 0).cast(pl.Int64))
-        keep = [c for c in out.collect_schema().names() if c not in ("xb", "eta")
+        keep = [c for c in out.collect_schema().names() if c not in ("xb", "eta", *drop)
                 and not c.startswith("fe_")]
         return out.with_columns(val.alias(name)).select(*keep, name)
 
@@ -1018,10 +1150,21 @@ class ConditionalLogitResult(LogitResult):
 
     def predict(self, newdata: Any = None, type: str = "response",
                 prefix: str | None = None, case: str | list | None = None,
-                calibrate: dict | None = None) -> pl.LazyFrame:
+                calibrate: dict | None = None, seed: int = 0,
+                alt: str | list | None = None, effects: str = "mode") -> pl.LazyFrame:
         """Predictions as a lazy frame, one per row (alternative):
         ``type="response"`` the choice probability within the row's choice
-        set (``prob``), ``"link"`` the utility x'b (``xb``). The choice sets
+        set (``prob``), ``"link"`` the utility x'b (``xb``), ``"draw"`` one
+        alternative drawn per set from the probabilities (``drawn``: True at
+        the drawn row; null for a set with no probabilities), for imputation.
+        The draw's uniform depends only on `seed` and the set's `case`
+        columns, not on the batches (see `logit_stream.mi`). The set's
+        alternatives are ordered by the column(s) `alt` (default: the
+        calibrated dimension's, with `calibrate`; else the fit's
+        alternative column if it has one, or the rows' order), so that the
+        draw does not depend on the rows' order either; with
+        `calibrate`, the draws are independent across sets, so the totals
+        hold only on average (`sample_assignments` keeps them). The choice sets
         are identified by `case` (default: the fit's). The probabilities
         are a window over each set, which Polars evaluates set by set.
 
@@ -1044,13 +1187,92 @@ class ConditionalLogitResult(LogitResult):
         the largest group); the result is a lazy scan of the batches'
         files (in the run directory, removed when Python exits) in
         `newdata`'s order, or in memory when `newdata` is one batch."""
-        if type not in ("response", "link"):
-            raise ValueError(f"type must be 'response' or 'link', got {type!r}")
+        if type not in ("response", "link", "draw"):
+            raise ValueError(f"type must be 'response', 'link' or 'draw', got {type!r}")
         case = self.case if case is None else ([case] if isinstance(case, str) else list(case))
+        if effects not in ("mode", "average"):
+            raise ValueError(f"effects must be 'mode' or 'average', got {effects!r}")
+        if effects == "average":
+            if type != "response" or calibrate is not None:
+                raise ValueError('effects="average" is for type="response", without calibrate=')
+            return self._average_slopes(self._frame(newdata), prefix or "prob", case)
+        if type == "draw":
+            from .mi import draw_choice
+            if alt is None and calibrate is not None and len(calibrate) == 1:
+                alt = list(self._spec["fe_cols"][next(iter(calibrate))]) \
+                    if next(iter(calibrate)) in self._spec.get("fe_cols", {}) else None
+            if alt is None and getattr(self, "alt", None):
+                alt = self.alt
+            alt = [alt] if isinstance(alt, str) else alt
+            lf = self.predict(newdata, "response", "__ls_prob", case, calibrate)
+            return draw_choice(lf, "__ls_prob", case, seed, prefix or "drawn", alt) \
+                .drop("__ls_prob")
         if calibrate is not None:
             from .calibrate import calibrated
             return calibrated(self, self._frame(newdata), type, prefix, case, calibrate)
         return self._predict(self._frame(newdata), type, prefix, case)
+
+    def _average_slopes(self, frame, name, case):
+        """Choice probabilities averaged over the random slopes'
+        distribution (a seen region's conditional one, normal at its mode;
+        an unseen region's N(0, Sigma)), by Gauss-Hermite quadrature: 15
+        nodes for one slope, 7 x 7 for two. Needs the choice set's region
+        (each set's alternatives share it)."""
+        from numpy.polynomial.hermite_e import hermegauss
+        spec = self._spec
+        sl = spec.get("slopes")
+        if not sl:
+            raise ValueError('effects="average" needs random slopes (random=)')
+        if spec.get("draw_index") is not None:
+            raise ValueError('effects="average" is for the fitted result: a draw\'s slopes are '
+                             "draws")
+        (region, zs), = sl.items()
+        info = self.random_effects[region]
+        if info.get("region_of") != "choice set":
+            raise ValueError('effects="average" needs each choice set\'s alternatives to share '
+                             "a region (the slopes are the alternatives' here: use "
+                             "draw_parameters for imputation)")
+        q = len(zs)
+        if q > 2:
+            raise ValueError('effects="average" takes at most two random slopes')
+        z, w = hermegauss(15 if q == 1 else 7)
+        w = w / w.sum()
+        Z = np.array(np.meshgrid(*([z] * q), indexing="ij")).reshape(q, -1).T
+        W = np.prod(np.array(np.meshgrid(*([w] * q), indexing="ij")).reshape(q, -1), axis=0)
+        # each region's mean and the Cholesky factor of its covariance; the prior's
+        table = spec["ranef"][region]
+        cols = spec["fe_cols"][region]
+        C = spec["ranef_cov"][region]
+        Ls = np.linalg.cholesky(C + 1e-300 * np.eye(q))
+        S0 = np.linalg.cholesky(np.asarray(info["Sigma"], float))
+        lnames = [(i, j) for i in range(q) for j in range(i + 1)]
+        lt = table.select(*cols, *[pl.col(f"re_{region}:{zn}").alias(f"__ls_mu{k}")
+                                   for k, zn in enumerate(zs)]).with_columns(
+            *[pl.Series(f"__ls_L{i}{j}", Ls[:, i, j]) for i, j in lnames])
+        bare = dict(spec)
+        bare["effects"] = [e for e in spec.get("effects", []) if e[2] != "slope"]
+        from dataclasses import replace as _replace
+        base = _replace(self, _spec=bare)._predict(frame, "link", "__ls_u0", case)
+        tsch = lt.collect_schema()
+        base = base.with_columns(pl.col(c).cast(tsch[c], strict=False) for c in cols)
+        lf = base.join(lt.lazy(), on=cols, how="left", maintain_order="left")
+        seen = pl.col("__ls_mu0").is_not_null()
+        mu = [pl.col(f"__ls_mu{k}").fill_null(0.0) for k in range(q)]
+        L = {(i, j): pl.when(seen).then(pl.col(f"__ls_L{i}{j}")).otherwise(float(S0[i, j]))
+             for i, j in lnames}
+        xe = spec["xexprs"]
+        terms = []
+        for zeta, wk in zip(Z, W):
+            u = pl.col("__ls_u0")
+            for i, zn in enumerate(zs):
+                bi = mu[i] + sum(L[(i, j)] * float(zeta[j]) for j in range(i + 1))
+                u = u + xe[zn] * bi
+            u = u - u.max().over(case)
+            terms.append(float(wk) * u.exp() / u.exp().sum().over(case))
+        prob = pl.when(pl.col("__ls_u0").is_null()).then(None).otherwise(pl.sum_horizontal(terms))
+        drop = ["__ls_u0", *[f"__ls_mu{k}" for k in range(q)],
+                *[f"__ls_L{i}{j}" for i, j in lnames]]
+        return lf.with_columns(prob.alias(name)).drop(drop)
 
     def sample_assignments(self, newdata: Any, totals: dict, sampler=None, seed: int = 0,
                            case: str | list | None = None,
@@ -1222,7 +1444,8 @@ class NestedLogitResult(ConditionalLogitResult):
                 "n_cases": self.n_cases, "loglik_clogit": self.loglik_clogit}
 
     def predict(self, newdata: Any = None, type: str = "response",
-                prefix: str | None = None, case: str | list | None = None) -> pl.LazyFrame:
+                prefix: str | None = None, case: str | list | None = None,
+                seed: int = 0) -> pl.LazyFrame:
         """Predictions as a lazy frame, one per row (alternative):
         ``type="response"`` the choice probability within the row's choice
         set (``prob``), ``"link"`` the utility x'b (``xb``). The choice sets
@@ -1230,8 +1453,9 @@ class NestedLogitResult(ConditionalLogitResult):
         the fit's `alt` column; an alternative in no nest of the fit gets a
         null, and so does every alternative of a set with a null utility.
         The probabilities need each whole set, so Polars evaluates the frame
-        in memory, as for the conditional logit's window."""
-        return super().predict(newdata, type, prefix, case)
+        in memory, as for the conditional logit's window. ``type="draw"``
+        draws one alternative per set, as the conditional logit's."""
+        return super().predict(newdata, type, prefix, case, seed=seed)
 
     def _predict(self, frame, type, prefix, case):
         if type == "link":

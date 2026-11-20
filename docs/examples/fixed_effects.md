@@ -125,7 +125,7 @@ cells are empty, mostly for the two rarest levels. With many small groups
 that is a real limitation for prediction -- a record of a level its PUMA's
 sample lacks gets probability 0 for its true level -- which [random
 intercepts](random_intercepts.md) avoid (see
-[imputation](imputation.md#fixed-or-random-effects)).
+[imputation](../imputation/predicting.md#fixed-or-random-effects)).
 
 ## Several fixed effects
 

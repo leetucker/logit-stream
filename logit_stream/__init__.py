@@ -48,6 +48,8 @@ from .api import (
     probit_stream,
 )
 from .assign import ExperimentalWarning
+from .lrtest import lr_test
+from .mi import PooledEstimate, pool, pool_matrix
 from .results import (
     BinaryLogitResult,
     BinaryProbitResult,
@@ -80,5 +82,6 @@ __all__ = [
     "OrderedLogitResult", "OrderedProbitResult",
     "ConditionalLogitResult", "ConditionalFELogitResult",
     "MixedLogitResult", "NestedLogitResult",
-    "LogitMulti", "ExperimentalWarning", "etable", "bonferroni", "holm", "__version__",
+    "LogitMulti", "ExperimentalWarning", "pool", "pool_matrix", "PooledEstimate", "lr_test",
+    "etable", "bonferroni", "holm", "__version__",
 ]

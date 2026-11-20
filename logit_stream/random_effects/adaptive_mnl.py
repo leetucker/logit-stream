@@ -670,6 +670,9 @@ def _fit_adaptive_mnl(driver, re, fit, re_info, fml, tol, n_nodes, log, logger):
     sd[:, re.lv] = np.sqrt(np.clip(np.diagonal(res["moments"].pcov, axis1=1, axis2=2), 0,
                                    None))
     re.sd_override = [np.where(f.keep[:, None], sd, np.nan)]
+    C = np.zeros((f.G, re.m, re.m))
+    C[np.ix_(np.arange(f.G), re.lv, re.lv)] = res["moments"].pcov
+    re.cov_override = [C]
     re.adaptive_V = res["Vb_cond"]
     re.method = "adaptive"
     from ..draws import adaptive_mnl_draw_info

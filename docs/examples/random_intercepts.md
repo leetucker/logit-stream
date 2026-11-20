@@ -284,7 +284,7 @@ time in the simulation above (84 s against 51 s for 60,000 rows). The
 tests check it against brute-force integration for J = 3, with and without
 a fixed effect: the estimates to 3e-3, the coefficients' and $\Sigma$'s
 standard errors to 3%. `draw_parameters` and `draw_ranef` work with it
-(see [Multiple imputation](multiple_imputation.md)). See
+(see [Multiple imputation](../imputation/multiple_imputation.md)). See
 `logit_stream.random_effects.adaptive_mnl`.
 
 **Conditional sds.** `ranef()` gives each group's effect (its conditional
@@ -376,6 +376,68 @@ correlation -- so they stay in range. They can still be poor when a variance
 is near zero, where profile-likelihood intervals would be better (not
 computed); at the floor, an sd's interval reaches to infinity, as the
 states' do above. `random_cov="diagonal"` estimates uncorrelated effects.
+
+### Testing a variance
+
+`lr_test(restricted, full)` is the likelihood-ratio test of two nested
+models, fitted to the same rows: 2 (loglik_full - loglik_restricted), on
+the difference in their numbers of parameters (`n_params`, which counts
+$\Sigma$'s). Is there PUMA variation at all? Against the model without the
+random intercepts:
+
+```python
+plain = mlogit_stream(f"race ~ {X}", people, levels=RACES)
+lr_test(plain, re)
+```
+
+```text
+{'statistic': 5413.55, 'df': 15, 'p': 0.0, 'reference': 'chi2(15)', 'boundary': False, ...}
+```
+
+A variance's null value, 0, is on the boundary of its space, so the
+statistic is not chi-squared under the null. For one variance, its null
+distribution is the 50:50 mixture of chi-squared(0), a point mass at 0, and
+chi-squared(1) (Self and Liang 1987). The plain chi-squared p-value is then
+twice too large, which makes the test conservative. `boundary="auto"`, the
+default, uses the mixture when the full model adds exactly one variance (a
+random grouping with a scalar intercept, as in the small-groups example
+above, or one random coefficient of the [mixed logit](mixed.md)):
+
+```python
+lr_test(logit_stream("y ~ 1 | cell", firms), sm)
+```
+
+```text
+{'statistic': 1262.35, 'df': 1, 'p': 8.6e-277, 'reference': '0.5 chi2(0) + 0.5 chi2(1)', 'boundary': True, ...}
+```
+
+Otherwise, as for the multinomial's 15 parameters above, it uses the plain
+chi-squared, as R's `anova` does for lme4's fits. That is conservative when
+variances are on the boundary, whose exact mixture is more complicated.
+`boundary=True` uses Stram and Lee's (1994) 50:50 mixture of
+chi-squared(df - 1) and chi-squared(df), the reference for adding one random
+effect with its covariances with the effects already in the model;
+`boundary=False` always uses the plain chi-squared. In a simulation with no
+group variance (200 data sets of 60 groups of 10), 55% of the statistics
+were 0, and the mixture rejected 8% of the time at the 10% level, against
+3.5% for the plain chi-squared.
+
+The log-likelihood with random intercepts is the fit's approximation of it,
+Laplace's or the adaptive quadrature's, so compare fits that use the same
+method. The test needs the likelihood: `lr_test` refuses ridge-penalized
+and Firth fits, and analytic (sampling) weights, under which the
+log-likelihood is a pseudo-likelihood (use `wald_test` with a robust
+variance there). The tests check the statistics against R's `anova` for
+`glm` and lme4's `glmer`.
+
+## References
+
+- Self, S. G. and K.-Y. Liang (1987). Asymptotic properties of maximum
+  likelihood estimators and likelihood ratio tests under nonstandard
+  conditions. *Journal of the American Statistical Association* 82(398),
+  605--610.
+- Stram, D. O. and J. W. Lee (1994). Variance components testing in the
+  longitudinal mixed effects model. *Biometrics* 50(4), 1171--1177.
 
 :::{dropdown} The full script: `examples/random_intercepts.py`
 ```{literalinclude} ../../examples/random_intercepts.py

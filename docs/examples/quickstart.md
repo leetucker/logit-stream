@@ -221,7 +221,7 @@ mode.predict(choices)                               # each alternative's probabi
 └───────────┴────────────┴────────────┴───────────────┴────────────┴───────────┴──────────────────┘
 ```
 
-For predicting at scale, see [imputation](imputation.md).
+For predicting at scale, see [imputation](../imputation/predicting.md).
 
 :::{dropdown} The full script: `examples/quickstart.py`
 ```{literalinclude} ../../examples/quickstart.py
