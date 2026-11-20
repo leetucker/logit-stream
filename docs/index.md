@@ -72,8 +72,16 @@ and one dense solve.
 - **Random intercepts** for the binary, multinomial and ordered logit, by
   Laplace's approximation, with nested or crossed groupings, as lme4's
   `glmer` and ordinal's `clmm` fit them, or by adaptive quadrature for one
-  grouping (experimental for the multinomial logit); and random slopes
-  (experimental). See [random intercepts](examples/random_intercepts.md).
+  grouping (experimental for the multinomial logit). See [random
+  intercepts](examples/random_intercepts.md).
+- **Random slopes** (experimental): a covariate's coefficient varying by
+  group, correlated with the group's intercept, for the binary, multinomial
+  and ordered logit (`random={"school": ["1", "prior"]}`, by adaptive
+  quadrature; see [random slopes](examples/random_intercepts.md#random-slopes)),
+  and by region in the conditional logit (`random={"cz": "dist"}`, by
+  Laplace's approximation, the region the choice set's or each
+  alternative's; see [random slopes by
+  region](examples/conditional.md#random-slopes-by-region)).
 - **pyfixest formulas**: `C()`, `i()`, interactions, `I()` and transforms,
   multiple estimation (`csw()`, `sw()`, several outcomes), with pyfixest's own
   coefficient names and categorical coding.

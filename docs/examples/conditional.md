@@ -238,13 +238,36 @@ A coefficient can vary across regions: the effect of distance on where
 people work may differ between dense and sparse labour markets. With
 `random={"cz": "dist"}`, each level of `cz` gets its own deviation b_g in
 the distance coefficient, drawn from N(0, $\Sigma$), with $\Sigma$
-estimated:
+estimated. The script for this section, `examples/regional_slopes.py`
+(at the end of the page), simulates 40,000 workers each choosing among 5
+of the 2,000 establishments in their home commuting zone, 60 zones whose
+distance slopes have sd 0.3 (0.272 as drawn):
 
 ```python
 fit = clogit_stream("chosen ~ dist | estab", jobs, case="worker", random={"cz": "dist"})
+fit.summary()
 fit.ranef().collect()          # each region's re_cz:dist and its conditional sd_cz:dist
-fit.varcorr()                  # the slopes' sd, with its standard error
 ```
+
+```text
+random slopes by cz (60 regions, the choice set's); Laplace approximation, sd (se): dist: 0.2549 (0.0255)
+┌─────────────┬───────────┬────────────┬────────────┬─────────────┐
+│ Coefficient ┆ Estimate  ┆ Std. Error ┆ t value    ┆ Pr(>|t|)    │
+╞═════════════╪═══════════╪════════════╪════════════╪═════════════╡
+│ dist        ┆ -0.984589 ┆ 0.034636   ┆ -28.427112 ┆ 9.3504e-178 │
+└─────────────┴───────────┴────────────┴────────────┴─────────────┘
+┌─────┬────────────┬────────────┬───────┬──────────┐
+│ cz  ┆ re_cz:dist ┆ sd_cz:dist ┆ n_obs ┆ n_chosen │
+╞═════╪════════════╪════════════╪═══════╪══════════╡
+│ 0   ┆ -0.142993  ┆ 0.082217   ┆ 659   ┆ 659      │
+│ 1   ┆ -0.015153  ┆ 0.074786   ┆ 677   ┆ 677      │
+│ 2   ┆ 0.090469   ┆ 0.069408   ┆ 684   ┆ 684      │
+│ ...
+```
+
+`fit.varcorr()` gives the sd with its standard error and confidence
+interval. With about 670 workers a zone, the predicted slopes correlate
+0.947 with the true ones.
 
 `dist`'s coefficient is then the mean slope, and a region's slope is that
 plus its deviation. Several covariates may vary (`{"cz": ["dist", "x2"]}`,
@@ -275,7 +298,11 @@ the slopes, given $\Sigma$. A clustered variance needs clusters that
 contain whole regions (`{"CRV1": "state"}`, or the region itself);
 `"hetero"` is not available, since a region's choice sets share its
 slopes. `lr_test(fit_without, fit)` tests whether the slope varies at all,
-with the boundary mixture for its variance.
+with the boundary mixture for its variance:
+
+```text
+{'statistic': 475.28, 'df': 1, 'p': 1.1e-105, 'reference': '0.5 chi2(0) + 0.5 chi2(1)', 'boundary': True, ...}
+```
 
 **Imputation.** `predict` adds each region's slopes, and 0 for a region the
 fit did not see. `predict(effects="average")` averages the probabilities
@@ -286,6 +313,22 @@ every region's slopes and the constants jointly, and $\Sigma$; the regions
 in `newdata` that the fit did not see get draws from N(0, that draw's
 $\Sigma$). Calibration to totals and constrained assignment then use each
 draw's slopes (see [choices with known totals](../imputation/known_totals.md)).
+For a worker choosing between a near and a far establishment, in zone 0
+and in a zone the fit did not see:
+
+```text
+┌────────┬─────┬──────┬─────────────┬──────────┐
+│ worker ┆ cz  ┆ dist ┆ conditional ┆ averaged │
+╞════════╪═════╪══════╪═════════════╪══════════╡
+│ 0      ┆ 0   ┆ 0.2  ┆ 0.840223    ┆ 0.839226 │
+│ 0      ┆ 0   ┆ 2.0  ┆ 0.159777    ┆ 0.160774 │
+│ 1      ┆ 999 ┆ 0.2  ┆ 0.802581    ┆ 0.792951 │
+│ 1      ┆ 999 ┆ 2.0  ┆ 0.197419    ┆ 0.207049 │
+└────────┴─────┴──────┴─────────────┴──────────┘
+```
+
+Zone 0's slope is well determined, so averaging changes little; for the
+unseen zone it spreads over the slopes' sd of 0.25.
 
 ## Related models
 
@@ -300,6 +343,12 @@ draw's slopes (see [choices with known totals](../imputation/known_totals.md)).
 
 :::{dropdown} The full script: `examples/conditional.py`
 ```{literalinclude} ../../examples/conditional.py
+:language: python
+```
+:::
+
+:::{dropdown} The random-slopes script: `examples/regional_slopes.py`
+```{literalinclude} ../../examples/regional_slopes.py
 :language: python
 ```
 :::

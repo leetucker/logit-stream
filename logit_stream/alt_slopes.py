@@ -772,7 +772,7 @@ class _AltSlopes(_AlternativeFE):
             if pd and 0 <= dec < driver.tol and change < tol:
                 converged = True
                 break
-        return theta, converged, it
+        return theta, converged, it, dec
 
     def fit(self, driver, theta, fml, tol=1e-6):
         """The joint mode for each Sigma with Sigma's Laplace-EM updates (a
@@ -783,8 +783,10 @@ class _AltSlopes(_AlternativeFE):
         q = self.q
         converged, rounds = False, 0
         f = None
+        steps = 0                       # Newton steps over the rounds and the refinement
         for rounds in range(1, SIGMA_MAXITER + 1):
             f = self._mode(driver, theta, fml)
+            steps += f.iterations
             theta = f.theta
             b = theta[self._bslice()].reshape(self.R, q)[self.keep]
             C, _ = self._cond_cov(f.H)
@@ -802,7 +804,8 @@ class _AltSlopes(_AlternativeFE):
                 break
         method = "laplace-em"
         if self.solver == "blocks":
-            theta, conv_l, steps = self._refine(driver, theta, fml, tol)
+            theta, conv_l, n_refine, dec_refine = self._refine(driver, theta, fml, tol)
+            steps += n_refine
             converged = conv_l
             method = "laplace"
         else:
@@ -824,7 +827,8 @@ class _AltSlopes(_AlternativeFE):
                 "converged": converged and f.converged, "passes": driver.passes - p_start,
                 "seconds": round(time.time() - t0, 3)}
         fit = _Fit(theta=f.theta, ll=ll_lap, g=f.g, H=f.H, ll_start=np.nan,
-                   iterations=f.iterations, converged=info["converged"], decrement=f.decrement,
+                   iterations=steps + f.iterations, converged=info["converged"],
+                   decrement=dec_refine if method == "laplace" else f.decrement,
                    halvings=0, path=[], seconds=time.time() - t0)
         return fit, info
 

@@ -4,7 +4,7 @@ Logit models for data that do not fit in memory: binary, multinomial,
 ordered, conditional, nested and mixed logit, fitted by Newton's method with
 the data streamed off disk, from
 [pyfixest](https://github.com/py-econometrics/pyfixest)-style formulas, with
-absorbed fixed effects or random intercepts.
+absorbed fixed effects, random intercepts or random slopes.
 
 ```python
 from logit_stream import mlogit_stream
@@ -35,6 +35,14 @@ coefficients, not of rows. The multinomial and ordered logit absorb one fixed
 effect exactly, by eliminating its per-level blocks of the information matrix
 in every step.
 
+Random intercepts for the binary, multinomial and ordered logit are fitted
+by Laplace's approximation (nested or crossed groupings, as lme4's `glmer`
+and ordinal's `clmm`) or by adaptive quadrature. Random slopes (experimental)
+let a covariate's coefficient vary by group: with its intercept in those
+models (`random={"school": ["1", "prior"]}`, by adaptive quadrature), and by
+region in the conditional logit (`random={"cz": "dist"}`, the region the
+choice set's or each alternative's).
+
 Results share [hdfe-stream](https://github.com/leetucker/hdfe-stream)'s
 reporting: `summary()`, `tidy()`, `summary_dict()`, `summary_json()`,
 `confint()`, `wald_test()`, `with_vcov()`, `etable()`, and lazy `predict()`,
@@ -52,7 +60,7 @@ assignments that match them exactly or approximately.
 
 Documentation: <https://leetucker.github.io/logit-stream/> (build locally with
 `pip install -e ".[docs]"` and `sphinx-build -b html docs docs/_build/html`).
-`examples/` has a runnable script for each page of its guide, on simulated
+`examples/` has the runnable scripts its guide's pages follow, on simulated
 data.
 
 ## Install

@@ -4,8 +4,10 @@ Each page here follows one of the scripts in
 [`examples/`](https://github.com/leetucker/logit-stream/tree/main/examples) of
 the repository: it explains what the script shows, with its output, and
 ends with the script itself, which you can download from the link at the top
-of the page. The scripts run on simulated data from `logit_stream.simulate`,
-so there is nothing else to download and nothing to configure. Each script
+of the page. The random-intercepts and conditional-logit pages have a
+second, short script for their random-slopes sections. The scripts run on
+simulated data from `logit_stream.simulate`, so there is nothing else to
+download and nothing to configure. Each script
 stands alone, so a downloaded one runs anywhere logit-stream is installed:
 
 ```bash
@@ -27,11 +29,11 @@ are from those runs, abridged; your numbers may differ in the last digits.
 | [Binary outcomes](binary.md) | the logit and probit with fixed effects, and Firth's penalized likelihood for separation |
 | [Multinomial logit](multinomial.md) | parameterization, standard errors (robust, clustered, multi-way, jackknife), weights, ridge |
 | [Ordered logit and probit](ordered.md) | cutpoints, levels, residuals and predictions |
-| [Conditional logit](conditional.md) | long-format choice data, alternative-specific constants, policy scenarios |
+| [Conditional logit](conditional.md) | long-format choice data, alternative-specific constants, policy scenarios, random slopes by region |
 | [Nested logit](nested.md) | nests of alternatives, the dissimilarity parameters, substitution, deeper trees |
 | [Mixed logit](mixed.md) | random coefficients, panels of repeated choices, simulation draws |
 | [Fixed effects](fixed_effects.md) | absorbing a fixed effect in the multinomial and ordered logit, and several |
-| [Random intercepts](random_intercepts.md) | group intercepts with an estimated covariance, nested groupings, shrinkage |
+| [Random intercepts](random_intercepts.md) | group intercepts with an estimated covariance, nested groupings, shrinkage, random slopes |
 | [Incidental parameters](incidental_parameters.md) | the fixed-effects logit's bias in short panels, the bias correction, and Chamberlain's conditional logit |
 
 Imputation with these models, from predicting at scale to multiple

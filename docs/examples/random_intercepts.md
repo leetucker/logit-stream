@@ -328,14 +328,42 @@ Random slopes are new; their interface may change.
 A covariate's coefficient can vary across groups too: the effect of a
 prior test score on proficiency may differ between schools. With
 `random={"school": ["1", "prior"]}`, each school gets a random intercept
-and a random slope in `prior`, with their covariance estimated:
+and a random slope in `prior`, with their covariance estimated. The
+script for this section, `examples/random_slopes.py` (at the end of the
+page), simulates 1,500 schools of about 8 students, whose intercepts and
+slopes have sds 0.8 and 0.5 and correlation 0.3:
 
 ```python
 fit = logit_stream("proficient ~ ses + prior | district", students,
                    random={"school": ["1", "prior"]})
-fit.varcorr()                  # sd((Intercept)), sd(prior) and their correlation
+fit.summary()
 fit.ranef().collect()          # re_school, re_school:prior and their conditional sds
 ```
+
+```text
+random intercepts and slopes; adaptive Gauss-Hermite quadrature, 7 nodes
+  by school (1,500 groups, unstructured covariance), sd (se): (Intercept): 0.7999 (0.0363)   prior: 0.3908 (0.0492)
+    correlations: (Intercept)~prior: +0.299 (0.1061)
+┌─────────────┬───────────┬────────────┬────────────┬─────────────┐
+│ Coefficient ┆ Estimate  ┆ Std. Error ┆ t value    ┆ Pr(>|t|)    │
+╞═════════════╪═══════════╪════════════╪════════════╪═════════════╡
+│ ses         ┆ -0.316571 ┆ 0.022859   ┆ -13.848556 ┆ 1.2980e-43  │
+│ prior       ┆ 0.679012  ┆ 0.027811   ┆ 24.415018  ┆ 1.1846e-131 │
+└─────────────┴───────────┴────────────┴────────────┴─────────────┘
+┌────────┬───────────┬─────────────────┬───────────┬─────────────────┬───────┐
+│ school ┆ re_school ┆ re_school:prior ┆ sd_school ┆ sd_school:prior ┆ n_obs │
+╞════════╪═══════════╪═════════════════╪═══════════╪═════════════════╪═══════╡
+│ 0      ┆ 0.636722  ┆ 0.102754        ┆ 0.580942  ┆ 0.358636        ┆ 11    │
+│ 1      ┆ 0.398915  ┆ 0.187354        ┆ 0.553715  ┆ 0.337145        ┆ 9     │
+│ 2      ┆ 0.869282  ┆ -0.017986       ┆ 0.635709  ┆ 0.371832        ┆ 8     │
+│ ...
+```
+
+The slope's sd, 0.39, is 2.2 standard errors below the simulation's 0.5:
+with eight students a school, the slopes are poorly determined, as their
+conditional sds show (about 0.36, nearly the sd itself), and the predicted
+slopes correlate only 0.48 with the true ones. `fit.varcorr()` gives the sds
+and the correlation with their standard errors and confidence intervals.
 
 `"1"` is the intercept; `{"school": "prior"}` gives a slope alone. With
 the ordered logit the effects shift the latent scale, and with the
@@ -363,7 +391,22 @@ quadrature with the same model, and with a fixed effect as dummy
 variables): the coefficients agree to 0.01 standard errors and the sds to
 2e-3. The ordered logit and the multinomial's slopes are checked against
 brute-force integration, and the two-level multinomial against the binary
-logit (equal to 1e-6). The binary fit with 1,500 groups took 9 seconds.
+logit (equal to 1e-6). The script's fit, with 1,500 groups, took 14 seconds.
+
+**Testing the slope.** Against the random intercept alone, the full model
+adds the slope's variance and its covariance with the intercept. The
+variance is on its boundary under the null, so the reference is Stram and
+Lee's 50:50 mixture of chi-squared(1) and chi-squared(2), `boundary=True`:
+
+```python
+intercept_only = logit_stream("proficient ~ ses + prior | district", students,
+                              random="school", random_method="adaptive")
+lr_test(intercept_only, fit, boundary=True)
+```
+
+```text
+{'statistic': 30.85, 'df': 2, 'p': 1.1e-07, 'reference': '0.5 chi2(1) + 0.5 chi2(2)', 'boundary': True, ...}
+```
 
 **Prediction and imputation.** `predict` adds each group's intercept and
 slopes (0 for a group the fit did not see). `effects="average"` averages
@@ -373,7 +416,23 @@ $\Sigma$ for an unseen group). `draw_parameters(n, ranef=True,
 newdata=...)` draws the coefficients, the fixed effect and $\Sigma$, then
 each group's effects given its rows by importance resampling, and an
 unseen group's from N(0, $\Sigma$), for [multiple
-imputation](../imputation/multiple_imputation.md).
+imputation](../imputation/multiple_imputation.md). For school 0 and a
+school the fit did not see, at two values of `prior`:
+
+```text
+┌────────┬───────┬─────────────┬──────────┐
+│ school ┆ prior ┆ conditional ┆ averaged │
+╞════════╪═══════╪═════════════╪══════════╡
+│ 0      ┆ -1.0  ┆ 0.180171    ┆ 0.196064 │
+│ 0      ┆ 1.0   ┆ 0.512084    ┆ 0.510718 │
+│ 99999  ┆ -1.0  ┆ 0.114138    ┆ 0.136655 │
+│ 99999  ┆ 1.0   ┆ 0.333782    ┆ 0.36014  │
+└────────┴───────┴─────────────┴──────────┘
+```
+
+The unseen school's conditional probability uses the mean intercept and
+slope; averaging over their distribution moves it toward one half, since
+the logistic curve is flatter away from its middle.
 
 ## How it is fitted
 
@@ -505,6 +564,12 @@ variance there). The tests check the statistics against R's `anova` for
 
 :::{dropdown} The full script: `examples/random_intercepts.py`
 ```{literalinclude} ../../examples/random_intercepts.py
+:language: python
+```
+:::
+
+:::{dropdown} The random-slopes script: `examples/random_slopes.py`
+```{literalinclude} ../../examples/random_slopes.py
 :language: python
 ```
 :::
