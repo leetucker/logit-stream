@@ -205,9 +205,12 @@ def level_se(result):
     given the coefficients plus what the coefficients' uncertainty adds,
     var(a_g) = D_g^-1 + (D_g^-1 J_g') V (J_g D_g^-1); None when not kept."""
     info = (result._spec or {}).get("draw")
-    if not info or info.get("kind") not in ("fe", "adaptive", "adaptive_mnl", "alt_fe"):
+    if not info or info.get("kind") not in ("fe", "adaptive", "adaptive_mnl", "alt_fe",
+                                            "alt_slopes"):
         return None
-    if info["kind"] == "alt_fe":
+    if info["kind"] == "alt_slopes" and not info["D"]:
+        return None
+    if info["kind"] in ("alt_fe", "alt_slopes"):
         # each constant less its group's reference: (e_j - e_r)' (Dinv + BD V BD') (e_j - e_r)
         ok, ref = info["alive"], info["ref"]
         j = np.flatnonzero(ok)
@@ -218,7 +221,8 @@ def level_se(result):
         Di = info["Dinv"]
         own = Di[pos + lj * s + lj] + Di[pos + lr * s + lr] - 2 * Di[pos + lj * s + lr]
         dB = info["BD"][j] - info["BD"][r]
-        add = np.einsum("np,pq,nq->n", dB, np.asarray(result.vcov, float), dB)
+        Vd = info["V"] if info["kind"] == "alt_slopes" else np.asarray(result.vcov, float)
+        add = np.einsum("np,pq,nq->n", dB, Vd, dB)
         var = np.full(len(ok), np.nan)
         var[j] = np.where(j == r, np.nan, own + add)
         return np.sqrt(np.clip(var, 0, None))[:, None]
@@ -360,6 +364,87 @@ def _drawn(result, spec, i, beta, levels, tau, fname, fcols, Sigma=None):
     diag["draw"] = i
     return replace(result, beta=np.asarray(beta, float), random_effects=re, diagnostics=diag,
                    _spec=s)
+
+
+# ------------------------------------------------------------------ random slopes
+def draw_slopes(result, n, rng, newdata=None):
+    """`n` draws for the conditional logit with random slopes by region:
+    beta and every region's slopes jointly from their normal approximation
+    (given Sigma: N(estimates, the inverse of their information net of the
+    constants)), the constants given them (as with absorbed constants
+    alone), and Sigma from its own (log-Cholesky) normal approximation;
+    with `newdata`, its regions the fit did not see get draws from N(0,
+    that draw's Sigma)."""
+    from .alt_slopes import _sigma_of_psi
+    if not isinstance(n, (int, np.integer)) or n < 1:
+        raise ValueError(f"n must be a positive integer, got {n!r}")
+    spec = result._spec
+    if spec.get("draw_index") is not None:
+        raise ValueError("this result is already a draw; draw from the fitted result")
+    info = spec["draw"]
+    P, Pd, R, q = info["P"], info["Pd"], info["R"], info["q"]
+    (region, zs), = spec["slopes"].items()
+    table = spec["ranef"][region]
+    cols = spec["fe_cols"][region]
+    Lf = _factor(info["V"])
+    Lp = _factor(info["Vpsi"]) if np.all(np.isfinite(info["Vpsi"])) else \
+        np.zeros_like(info["Vpsi"])
+    fname, fcols = _fe_columns(spec)
+    new = None
+    if newdata is not None:
+        from .results import as_lazy as _lazy
+        new = (_lazy(newdata).select(cols).unique()
+               .join(table.select(cols).lazy(), on=cols, how="anti").collect().sort(cols))
+    keep = info["keep"]
+    out = []
+    for i in range(n):
+        coef = info["coef"] + Lf @ rng.standard_normal(Pd)
+        beta = coef[:P]
+        B = coef[P:].reshape(R, q)[keep]
+        Sigma = _sigma_of_psi(info["psi"] + Lp @ rng.standard_normal(len(info["psi"])), q)
+        levels = None
+        if info["D"]:
+            A = info["alpha"] - info["BD"] @ (coef - info["coef"])
+            z = rng.standard_normal(len(A))
+            S, order, start = info["S"], info["level_order"], info["comp_start"]
+            for s_, comps in info["by_size"]:
+                k = len(comps)
+                idx = info["comp_pos"][comps][:, None] + np.arange(s_ * s_)[None, :]
+                lv = order[start[comps][:, None] + np.arange(s_)[None, :]]
+                A[lv] += (S[idx].reshape(k, s_, s_) @ z[lv][..., None])[..., 0]
+            ok, ref = info["alive"], info["ref"]
+            levels = np.where(ok, A - np.where(ok, A[np.maximum(ref, 0)], 0.0), np.nan)[:, None]
+        s = dict(spec)
+        s["draw_index"] = i
+        s.pop("draw", None)
+        if levels is not None and fname is not None:
+            ft = spec["fixef"][fname]
+            v = levels[:, 0]
+            s["fixef"] = {fname: ft.with_columns(
+                pl.Series(fcols[0], np.where(np.isfinite(v), v, np.nan)).fill_nan(None))}
+        t = table.with_columns(*[pl.Series(f"re_{region}:{zn}", B[:, j])
+                                 for j, zn in enumerate(zs)])
+        if new is not None and new.height:
+            Lc = np.linalg.cholesky(Sigma)
+            Bn = rng.standard_normal((new.height, q)) @ Lc.T
+            add = new.with_columns(
+                *[pl.Series(f"re_{region}:{zn}", Bn[:, j]) for j, zn in enumerate(zs)],
+                *[pl.Series(f"sd_{region}:{zn}", np.full(new.height, np.sqrt(Sigma[j, j])))
+                  for j, zn in enumerate(zs)],
+                pl.lit(0, dtype=t.schema["n_obs"]).alias("n_obs"),
+                pl.lit(0, dtype=t.schema["n_chosen"]).alias("n_chosen"))
+            add = add.with_columns(pl.col(c).cast(t.schema[c]) for c in cols)
+            t = pl.concat([t, add.select(t.columns)])
+        s["ranef"] = {region: t}
+        s["ranef_drawn"] = True
+        re = {k: dict(v) for k, v in result.random_effects.items()}
+        re[region]["Sigma"] = Sigma
+        re[region]["sd"] = np.sqrt(np.diag(Sigma))
+        diag = dict(result.diagnostics or {})
+        diag["draw"] = i
+        out.append(replace(result, beta=np.asarray(beta, float), random_effects=re,
+                           diagnostics=diag, _spec=s))
+    return out
 
 
 # ------------------------------------------------------------------ group intercepts

@@ -215,49 +215,77 @@ Its standard error (`se_<name>`) is that of the difference, and
 need one dimension and the blocks. Robust (``vcov="hetero"``) and clustered
 (``{"CRV1": "firm"}``) variances work with either solver and any number of
 dimensions. Each choice set's score for the coefficients is taken net of the
-constants, which gives the same standard errors as the dummy-coded fit's.
+constants, which gives the same standard errors as the dummy-coded fit's. The
+tests also check the estimate and its standard errors (iid, robust and
+clustered) against pyfixest's `fepois` with choice-set and establishment
+fixed effects, the same model as a Poisson regression.
 
-**Calibrating to known totals.** `predict(..., calibrate={"estab": totals})`
-solves each establishment's constant from a known total instead: the one at
-which its predicted choices over `newdata`'s sets equal the total, given the
-coefficients. That is what imputation needs where the establishments are new
-(no workers of theirs were in the fit) but their employment is known. Each
-draw from `draw_parameters` calibrates under its own coefficients. Within
-each firm the totals are first scaled to its number of choice sets, with a
-warning if they differ by more than 1%.
+**Calibrating to known totals.** Where the alternatives are new (no
+choosers of theirs were in the fit) but each one's total is known, such as
+an establishment's employment, `predict(..., calibrate={"estab": totals})`
+solves their constants from the totals instead, given the coefficients.
+Imputing the choices themselves to match the totals is the subject of
+[choices with known totals](../imputation/known_totals.md).
 
-The solve needs all of a group's rows at once: a firm, or more generally the
-levels that `newdata`'s choice sets link together. So `newdata` is streamed
-through disk a batch of whole groups at a time, about 2 million rows per
-batch, or the largest group if that is bigger. The groups are found by label
-propagation over the (set, establishment) pairs on disk. Each batch's
-constants come from contraction rounds, delta += log(total / predicted),
-which converge in a few rounds when every worker in a firm faces all of its
-establishments. When they slow down, as on long chains of linked levels,
-Newton's method finishes the solve. The predictions come back as a lazy scan
-of the batches' files, in `newdata`'s order, so they can be sunk to disk
-without ever being in memory. The files are removed when Python exits. With
-4.1 million rows (a 99 MB frame) the calibration took 4 seconds. Peak memory
-rose by 0.5 GB with the default batches and by 0.36 GB with batches of
-500,000 rows, including the collected result.
+## Random slopes by region
 
-In a simulation (3,000 firms of 2 to 10 establishments and 5 to 150 workers
-in the fit, 1,000 new firms to impute, true distance coefficient -1.2), the
-two approaches compare as follows. In the first, the log of each
-establishment's share of its firm's workers is an offset, both in the fit
-and at imputation; in the second, the constants are absorbed and then
-calibrated:
+:::{admonition} Experimental
+:class: warning
+Random slopes in the conditional logit are new; their interface may change.
+:::
 
-| | distance coefficient | mean commute (truth 1.797) | P(the true establishment) | workers placed against the totals |
-|---|---|---|---|---|
-| log-share offset | -1.012 | 1.805 | 0.445 | 18% misallocated |
-| constants + calibration | -1.231 | 1.800 | 0.470 | exact |
+A coefficient can vary across regions: the effect of distance on where
+people work may differ between dense and sparse labour markets. With
+`random={"cz": "dist"}`, each level of `cz` gets its own deviation b_g in
+the distance coefficient, drawn from N(0, $\Sigma$), with $\Sigma$
+estimated:
 
-The offset attenuates the coefficient by a sixth. Aggregate commutes barely
-change, but the establishments' totals do not hold. The absorbed
-constants' estimate is 2.5% too large: the maximum-likelihood estimate's
-own bias with about 13 workers per establishment, as with other fixed
-effects estimated from few observations each.
+```python
+fit = clogit_stream("chosen ~ dist | estab", jobs, case="worker", random={"cz": "dist"})
+fit.ranef().collect()          # each region's re_cz:dist and its conditional sd_cz:dist
+fit.varcorr()                  # the slopes' sd, with its standard error
+```
+
+`dist`'s coefficient is then the mean slope, and a region's slope is that
+plus its deviation. Several covariates may vary (`{"cz": ["dist", "x2"]}`,
+with their covariance). A row's region can be its choice set's (a worker's
+home commuting zone, shared by every alternative in the set) or the
+alternative's own (an establishment's commuting zone, which can differ
+between a worker's alternatives). The data decide which, and a set may mix
+regions. Absorbed constants (`| estab`) are allowed with either.
+
+**How it is fitted.** The regions' slopes enter like extra coefficients,
+pulled toward zero by their prior, $\Sigma^{-1}$. They are solved with the
+coefficients and the absorbed constants in the same Newton steps, with the
+constants eliminated group by group as above. $\Sigma$ maximizes Laplace's
+approximation of the marginal likelihood, with the slopes integrated out,
+as for the [random intercepts](random_intercepts.md). With regions of
+hundreds or thousands of choice sets, the approximation is very close to
+exact. The tests check the fit against exact maximum likelihood (a dense
+grid around each region's mode), to 0.005 standard errors, and against an
+independent implementation of the Laplace approximation where the regions'
+slopes do not separate (the alternatives' regions, and two slopes), to
+1e-8. In a simulation with 2.3 million rows (384,000 workers in 5,000
+firms, 60 regions), the fit took 4.6 seconds, against 1.9 without the
+slopes, and estimated the slopes' sd at 0.291 (the regions' realized sd was
+0.283). The regions times the slopes are at most 2,000.
+
+**Inference.** The coefficients' iid variance is net of the constants and
+the slopes, given $\Sigma$. A clustered variance needs clusters that
+contain whole regions (`{"CRV1": "state"}`, or the region itself);
+`"hetero"` is not available, since a region's choice sets share its
+slopes. `lr_test(fit_without, fit)` tests whether the slope varies at all,
+with the boundary mixture for its variance.
+
+**Imputation.** `predict` adds each region's slopes, and 0 for a region the
+fit did not see. `predict(effects="average")` averages the probabilities
+over the slopes' distribution instead: each region's conditional one, or
+N(0, $\Sigma$) for an unseen region (for regions shared by a set's
+alternatives). `draw_parameters(n, newdata=...)` draws the coefficients,
+every region's slopes and the constants jointly, and $\Sigma$; the regions
+in `newdata` that the fit did not see get draws from N(0, that draw's
+$\Sigma$). Calibration to totals and constrained assignment then use each
+draw's slopes (see [choices with known totals](../imputation/known_totals.md)).
 
 ## Related models
 

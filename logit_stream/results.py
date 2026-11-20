@@ -278,6 +278,10 @@ class LogitResult(RegressionResult):
         `newdata`: as for `draw_ranef`."""
         from .draws import draw, draw_ranef_many
         rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+        if ((self._spec or {}).get("draw") or {}).get("kind") == "alt_slopes":
+            # random slopes by region: every region's slopes are part of each draw
+            from .draws import draw_slopes
+            return draw_slopes(self, n, rng, newdata)
         out = draw(self, n, rng)
         if ranef:
             out = draw_ranef_many(out, rng, newdata)
@@ -1315,10 +1319,25 @@ class ConditionalLogitResult(LogitResult):
         if self._spec.get("effects"):
             # the absorbed alternative constants: null for a level the fit did not
             # see, or dropped (never chosen: its probability is 0), which leaves the
-            # row out of its set's normalization
+            # row out of its set's normalization; random slopes: z'b of the row's
+            # region, 0 for a region the fit did not see
             frame, tmp = self._with_fe(frame)
-            xb = pl.when(pl.any_horizontal([pl.col(t).is_null() for t in tmp])).then(None) \
-                .otherwise(xb + pl.sum_horizontal([pl.col(t) for t in tmp]))
+            fixed, slope = [], []
+            at = 0
+            for d, values, kind in self._spec["effects"]:
+                names = tmp[at:at + len(values)]
+                at += len(values)
+                if kind == "slope":
+                    zs = self._spec["slopes"][d]
+                    xe = self._spec["xexprs"]
+                    slope += [pl.col(t).fill_null(0.0) * xe[z] for t, z in zip(names, zs)]
+                else:
+                    fixed += names
+            if slope:
+                xb = xb + pl.sum_horizontal(slope)
+            if fixed:
+                xb = pl.when(pl.any_horizontal([pl.col(t).is_null() for t in fixed])) \
+                    .then(None).otherwise(xb + pl.sum_horizontal([pl.col(t) for t in fixed]))
         if type == "link":
             return frame.with_columns(xb.alias(prefix or "xb")).drop(tmp)
         u = xb - xb.max().over(case)

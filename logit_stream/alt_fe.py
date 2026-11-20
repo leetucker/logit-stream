@@ -335,7 +335,8 @@ class _AlternativeFE:
     (the "blocks" solver) or fits by its own loop ("contraction"). See the
     module docstring."""
 
-    def __init__(self, model, p0, names, log, logger=None, budget=None, solver="auto"):
+    def __init__(self, model, p0, names, log, logger=None, budget=None, solver="auto",
+                 keys=None):
         if solver not in ("auto", "blocks", "contraction"):
             raise ValueError("fe_solver must be 'auto', 'blocks' or 'contraction'")
         self.model, self.p0, self.names = model, p0, list(names)
@@ -343,13 +344,15 @@ class _AlternativeFE:
         self.log, self.logger = log, logger
         self.budget = budget if budget is not None else MemoryBudget()
         self.D = len(self.names)
-        self.keys = ["fe"] + [f"fe{k + 1}" for k in range(1, self.D)]
+        self.keys = (list(keys) if keys is not None
+                     else ["fe"] + [f"fe{k + 1}" for k in range(1, self.D)])
         self.G = [p0.fe_tables[nm].height for nm in self.names]
         self.off = np.r_[0, np.cumsum(self.G)[:-1]].astype(np.int64)
         L = int(sum(self.G))
         self.L = L
-        log("alternative constants: "
-            + ", ".join(f"{nm} ({g:,})" for nm, g in zip(self.names, self.G)))
+        if self.D:
+            log("alternative constants: "
+                + ", ".join(f"{nm} ({g:,})" for nm, g in zip(self.names, self.G)))
         # ---- separation, by repeated scans
         self.level_alive = np.ones(L, bool)
         always = np.zeros(L, bool)
@@ -400,18 +403,22 @@ class _AlternativeFE:
         # each level's local index in its group, and the groups' levels in order
         order = alive[np.argsort(comp_alive, kind="stable")]
         self.level_order = order
-        self.comp_start = np.r_[0, np.cumsum(sizes)[:-1]].astype(np.int64)
+        self.comp_start = (np.r_[0, np.cumsum(sizes)[:-1]].astype(np.int64) if C
+                           else np.zeros(0, np.int64))
         self.loc = np.full(L, -1, np.int64)
         self.loc[order] = np.arange(len(order)) - np.repeat(self.comp_start, sizes)
-        self.comp_pos = np.r_[0, np.cumsum(sizes * sizes)[:-1]].astype(np.int64)
+        self.comp_pos = (np.r_[0, np.cumsum(sizes * sizes)[:-1]].astype(np.int64) if C
+                         else np.zeros(0, np.int64))
         block_gb = float((sizes.astype(float) ** 2).sum()) * 8 * 2 / 1e9
         biggest = int(sizes.max()) if C else 0
-        log(f"  {C:,} groups of linked levels (largest {biggest:,}); the blocks would take "
-            f"{block_gb:.2f} GB")
+        if self.D:
+            log(f"  {C:,} groups of linked levels (largest {biggest:,}); the blocks would take "
+                f"{block_gb:.2f} GB")
         if solver == "auto":
             solver = ("blocks" if biggest <= BLOCK_MAX and self.budget.fits(block_gb)
                       else "contraction")
-            log(f"  fe_solver: {solver}")
+            if self.D:
+                log(f"  fe_solver: {solver}")
         elif solver == "blocks" and not self.budget.fits(block_gb):
             raise MemoryError(f"fe_solver='blocks' needs about {block_gb:.1f} GB for the groups' "
                               f"blocks and {self.budget.headroom_gb():.1f} GB is free "
@@ -421,6 +428,12 @@ class _AlternativeFE:
         # until then the levels less one per group
         self.n_params = len(alive) - C
         self.method = solver
+
+    @property
+    def Pd(self):
+        """The dense coefficients ahead of the constants in theta: the
+        model's (and, in `_AltSlopes`, the regions' slopes)."""
+        return self.model.P
 
     # ------------------------------------------------------------ layout
     def _blocks(self, fields):
@@ -433,6 +446,8 @@ class _AlternativeFE:
             c0 += n
 
     def _lev(self, blk):
+        if not self.D:
+            return np.zeros((int(blk["starts"][-1]), 0), np.int64)
         return np.column_stack([blk[k].astype(np.int64) + o
                                 for k, o in zip(self.keys, self.off)])
 
@@ -440,7 +455,10 @@ class _AlternativeFE:
         return self.level_alive[lev].all(axis=1)
 
     def _set_comp(self, lev, starts, row_alive, case_alive):
-        """Each set's group (-1 for a dropped set)."""
+        """Each set's group (-1 for a dropped set); without constants, the
+        set's own index (the sets are independent)."""
+        if not self.D:
+            return np.where(case_alive, np.arange(len(starts) - 1), -1).astype(np.int64)
         c = np.where(row_alive, self.comp[lev[:, 0]], -1)
         sc = np.maximum.reduceat(c, starts[:-1]) if len(starts) > 1 else np.zeros(0, np.int64)
         return np.where(case_alive, sc, -1).astype(np.int64)
@@ -531,6 +549,8 @@ class _AlternativeFE:
     # ------------------------------------------------------------ the blocks' algebra
     def _groups_by_size(self):
         """(size, the groups of that size) for each size."""
+        if not hasattr(self, "_by_size") and not self.C:
+            self._by_size = []
         if not hasattr(self, "_by_size"):
             sizes = self.comp_size
             o = np.argsort(sizes, kind="stable")
@@ -670,7 +690,7 @@ class _AlternativeFE:
     def _contract(self, driver, theta, max_rounds=10_000):
         """The constants given b, by count matching, dimension by dimension:
         alpha_l += log(chosen_l / predicted_l) on the weighted counts."""
-        P = self.model.P
+        P = self.Pd
         theta = theta.copy()
         ok = self.level_alive
         target = None
@@ -750,7 +770,7 @@ class _AlternativeFE:
         `_Fit` whose H carries the coefficients' information net of the
         constants (`H.red`)."""
         t0 = time.time()
-        P = self.model.P
+        P = self.Pd
         theta, rounds = self._contract(driver, theta)
         ll, g, H = self.pass_(driver, theta, True, mode=2)
         ll_start = ll
@@ -813,7 +833,7 @@ class _AlternativeFE:
     def normalized(self, theta):
         """The constants as reported: with one dimension, 0 at each group's
         reference level (its most chosen); NaN for a level dropped."""
-        P = self.model.P
+        P = self.Pd
         a = theta[P:].copy()
         ok = self.level_alive
         if self.D == 1 and self.C:

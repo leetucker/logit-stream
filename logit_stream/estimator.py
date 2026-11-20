@@ -308,6 +308,12 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                  "effect")
             # the groupings' codes are the store's fe, fe2, ... in this order
             spec = replace(spec, fe=[*random, *spec.fe])
+        elif slopes is not None:
+            if slopes[0] in spec.fe:
+                raise ValueError(f"{spec.fml}: {slopes[0]!r} cannot be both absorbed and the "
+                                 "random slopes' grouping")
+            # the region's codes follow the constants' in the store
+            spec = replace(spec, fe=[*spec.fe, slopes[0]])
         elif spec.fe:
             if _binary and len(spec.fe) > 1:
                 raise _NeedsHdfe
@@ -445,6 +451,16 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                         f"{spec.fml}: with random intercepts, a clustering must contain whole "
                         f"groups of the coarsest random grouping ({fe.random[-1].name}), and "
                         f"crossed groupings allow none; {bad} do not")
+        elif slopes is not None:
+            from .alt_slopes import _AltSlopes
+            if hetero:
+                raise ValueError(f"{spec.fml}: with random slopes the heteroskedasticity-robust "
+                                 "variance is not available (a region's choice sets share its "
+                                 "slopes); cluster by a variable that contains whole regions")
+            alt = list(spec.fe[:-1])
+            keys = ["fe" if i == 0 else f"fe{i + 1}" for i in range(len(spec.fe))]
+            fe = _AltSlopes(model, p0, alt, slopes[0], keys[:-1], keys[-1], slopes[1],
+                            log=log, logger=logger, budget=budget, solver=fe_solver)
         elif spec.fe and kind == "clogit":
             from .alt_fe import _AlternativeFE
             fe = _AlternativeFE(model, p0, spec.fe, log=log, logger=logger, budget=budget,
@@ -492,6 +508,14 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                      "boundary or 'singular' fit): those groups differ no more than chance "
                      "allows, beyond the other terms; consider dropping the grouping. Its "
                      "standard errors are not meaningful at the boundary.", logger)
+        elif slopes is not None:
+            fit, slope_info = fe.fit(driver, theta0, spec.fml, tol=random_tol)
+            if not slope_info["converged"]:
+                warn(f"{spec.fml}: the random slopes' fit did not converge", logger)
+            if fe.singular:
+                warn(f"{spec.fml}: the random slopes by {slopes[0]} have an estimated variance "
+                     "of zero in some direction (held at the floor, an sd of 0.001): the "
+                     "regions differ no more than chance allows", logger)
         elif getattr(fe, "solver", None) == "contraction":
             fit = fe.run_contraction(driver, theta0, spec.fml)
         else:
@@ -649,7 +673,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       firth=bool(firth),
                       n_params=P + k_fe,
                       converged=fit.converged and (re_info is None or re_info["converged"]),
-                      fe_names=(list(spec.fe) if random is None
+                      fe_names=(list(spec.fe[:-1]) if slopes is not None
+                                else list(spec.fe) if random is None
                                 else [outer] if outer is not None else []),
                       l2=float(l2),
                       n_levels=({nm: g for nm, g in zip(fe.names, fe.G)} if hasattr(fe, "names")
@@ -698,6 +723,17 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         else:
             res = ConditionalLogitResult(**common, case=list(case), n_cases=int(p0.n_cases),
                                          _spec=rspec)
+            if slopes is not None:
+                from .random_effects.fit import _sigma_summary
+                own, Vf, _, _ = fe.sigma_info
+                res.random_effects = {slopes[0]: {
+                    "group": slopes[0], "n_groups": int(fe.n_regions),
+                    "Sigma": fe.Sigma.copy(), "cov": "unstructured", "method": "laplace",
+                    "nodes": 1, "within": None, "structure": "slopes",
+                    "levels": list(fe.slopes),
+                    "region_of": "alternative" if fe.mixed else "choice set",
+                    **_sigma_summary(fe.Sigma, Vf, own)}}
+                res.diagnostics["random_slopes"] = slope_info
         p0.store.delete()
         return res
     finally:

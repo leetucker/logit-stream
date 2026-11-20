@@ -577,6 +577,22 @@ clogit_stream.__doc__ = """Out-of-core conditional (McFadden) logit by streamed 
         other alternatives it would be a different choice set. With
         ``altwise=True`` only the incomplete alternatives are dropped (a set
         that loses its chosen alternative is then an error).
+    random : dict, optional
+        Random slopes by region (experimental): ``{"cz": "dist"}`` (or
+        ``{"cz": ["dist", "x2"]}``) gives each level of the grouping column
+        its own deviation b_g ~ N(0, Sigma) in those covariates'
+        coefficients. A row's region may be its choice set's (every
+        alternative of a set in one region: the chooser's) or its own (the
+        alternative's); the data decide, and a set may mix regions. Fitted
+        by Laplace's approximation of the marginal likelihood, with any
+        absorbed alternative constants (``| estab``); at most 2,000 regions
+        x slopes. `vcov` may be ``"iid"`` or clustered by a variable that
+        contains whole regions. `ranef` has each region's slopes and
+        conditional sds, `random_effects` and `varcorr` Sigma; `predict`
+        adds each region's slopes (0 for a region the fit did not see), and
+        ``predict(effects="average")`` averages the probabilities over
+        them; `draw_parameters` draws them with the coefficients. See
+        `logit_stream.alt_slopes`.
 
     Returns
     -------

@@ -19,8 +19,11 @@ Layout
     multi_fe.py      several, for the multinomial logit (a Poisson regression)
     random_effects/  random intercepts (Laplace's approximation)
     alt_fe.py        the conditional logit's absorbed alternative constants
+    alt_slopes.py    its random slopes by region (experimental)
     calibrate.py     constants solved from known totals; streaming by group
     assign.py        constrained assignment to known totals (experimental)
+    mi.py            multiple imputation: outcome draws, pooling by Rubin's rules
+    lrtest.py        the likelihood-ratio test of nested models
     optimize.py      Newton and quasi-Newton steps from an analytic gradient,
                      for the likelihoods that are not concave
     _choice.py       what the mixed and nested logit's fits share
