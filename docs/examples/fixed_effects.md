@@ -77,8 +77,8 @@ dummies = mlogit_stream(f"race ~ {X} + C(state)", people, levels=RACES, vcov="he
 ```
 
 ```text
-largest difference in estimates: 1.2e-15  in standard errors: 1.2e-09
-time: absorbed 0.9 s, indicators 2.1 s
+largest difference in estimates: 9.7e-16  in standard errors: 1.2e-09
+time: absorbed 0.4 s, indicators 3.0 s
 ```
 
 With 1,020 PUMAs the indicators would be 5,100 columns, and a dense
@@ -178,7 +178,7 @@ probability is 0 (their effects are minus infinity), and fixef() shows a null
 │ 19  ┆ 0.0          ┆ 0.969493    ┆ 0.967301    ┆ -2.29046    ┆ -0.415205   ┆ -0.718626   ┆ 227   │
 │ 20  ┆ 0.0          ┆ 0.977531    ┆ 0.987516    ┆ -3.046074   ┆ 0.301195    ┆ -0.961219   ┆ 302   │
 └─────┴──────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴───────┘
-time: 10.4 s
+time: 11.9 s
 ```
 
 `age10` is left out: it is collinear with single years of age, which the

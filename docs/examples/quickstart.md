@@ -32,18 +32,21 @@ fit.summary()
 
 ```text
 ### hispanic ~ age10 + female + log_income + owner + urban | puma
-Streaming HDFE (logit)   vcov: CRV1:puma
-obs: 199,928   puma: 1,019
-dropped for separation: 72 observations
-FE dof: 1,019   deviance: 166607.57   log-likelihood: -83303.783   pseudo R2: 0.074157   within pseudo R2: 0.034597   IRLS steps: 6
+Binary logit (logit_stream, Newton)   vcov: CRV1:puma
+obs: 199,928   outcome hispanic: binary
+log-likelihood: -83303.783   null: -89976.186   pseudo R2: 0.074157   AIC: 168655.57   BIC: 179106.22
+within pseudo R2 (beyond puma): 0.034597   fixed-effect-only log-likelihood: -86289.165
+Newton steps: 7 (converged, decrement 4.24e-14)
+fixed effects: puma (1,019 levels)
+dropped for separation: 72 observations in 1 levels whose outcome never varies
 ┌─────────────┬───────────┬────────────┬────────────┬─────────────┐
 │ Coefficient ┆ Estimate  ┆ Std. Error ┆ t value    ┆ Pr(>|t|)    │
 ╞═════════════╪═══════════╪════════════╪════════════╪═════════════╡
-│ age10       ┆ -0.203589 ┆ 0.004636   ┆ -43.912405 ┆ 0.0         │
-│ female      ┆ -0.004303 ┆ 0.013582   ┆ -0.316784  ┆ 0.751408    │
-│ log_income  ┆ -0.307143 ┆ 0.007946   ┆ -38.65597  ┆ 0.0         │
-│ owner       ┆ -0.2886   ┆ 0.018975   ┆ -15.20915  ┆ 3.0751e-52  │
-│ urban       ┆ 0.507099  ┆ 0.014793   ┆ 34.279751  ┆ 1.5723e-257 │
+│ age10       ┆ -0.203589 ┆ 0.004636   ┆ -43.912368 ┆ 0.0         │
+│ female      ┆ -0.004303 ┆ 0.013582   ┆ -0.316783  ┆ 0.751408    │
+│ log_income  ┆ -0.307143 ┆ 0.007946   ┆ -38.655944 ┆ 0.0         │
+│ owner       ┆ -0.2886   ┆ 0.018975   ┆ -15.209138 ┆ 3.0757e-52  │
+│ urban       ┆ 0.507099  ┆ 0.014793   ┆ 34.279722  ┆ 1.5738e-257 │
 └─────────────┴───────────┴────────────┴────────────┴─────────────┘
 ```
 
@@ -178,7 +181,7 @@ Results have hdfe-stream's reporting methods:
 ```python
 race.summary()                              # printed report
 race.summary_json("race.json", coefficients=True)   # JSON, for pipelines
-race.confint(joint=True, keep="female")     # simultaneous intervals
+race.confint(joint=True, keep="female", seed=1)   # simultaneous intervals
 race.wald_test(keep="log_income")           # chi-squared, by default
 race.with_vcov({"CRV1": "puma"})            # another vcov computed at fit time
 ```
@@ -187,13 +190,13 @@ race.with_vcov({"CRV1": "puma"})            # another vcov computed at fit time
 ┌────────────────────┬───────────┬──────────┐
 │ Coefficient        ┆ 2.5%      ┆ 97.5%    │
 ╞════════════════════╪═══════════╪══════════╡
-│ Black:female       ┆ 0.011001  ┆ 0.077931 │
-│ Hispanic:female    ┆ -0.035001 ┆ 0.049635 │
-│ Asian:female       ┆ -0.014444 ┆ 0.072277 │
-│ AIAN:female        ┆ -0.118751 ┆ 0.121302 │
-│ Multiracial:female ┆ -0.077234 ┆ 0.15465  │
+│ Black:female       ┆ 0.01129   ┆ 0.077642 │
+│ Hispanic:female    ┆ -0.034635 ┆ 0.04927  │
+│ Asian:female       ┆ -0.014069 ┆ 0.071902 │
+│ AIAN:female        ┆ -0.117714 ┆ 0.120265 │
+│ Multiracial:female ┆ -0.076232 ┆ 0.153648 │
 └────────────────────┴───────────┴──────────┘
-{'statistic': 3831.059227999039, 'pvalue': 0.0, 'df1': 5, 'df2': None, 'distribution': 'chi2'}
+{'statistic': 3831.0592279985353, 'pvalue': 0.0, 'df1': 5, 'df2': None, 'distribution': 'chi2'}
 ```
 
 and `logit_stream.etable([fit1, fit2])` makes a regression table (through

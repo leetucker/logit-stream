@@ -169,7 +169,7 @@ fw = mlogit_stream("race ~ female + urban + owner", counts, levels=RACES, weight
 ```
 
 ```text
-frequency weights: 48 rows, n_obs 200,000; largest difference from the row-level fit 1.0e-15 (se 1.3e-16)
+frequency weights: 48 rows, n_obs 200,000; largest difference from the row-level fit 1.3e-14 (se 3.1e-15)
 ```
 
 ## Several models and a table

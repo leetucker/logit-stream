@@ -21,7 +21,7 @@ re.summary()
 ```
 
 ```text
-### race ~ age10 + female + log_income + owner + urban
+### race ~ 1 + age10 + female + log_income + owner + urban
 Multinomial logit (logit_stream, Newton)   vcov: CRV1:puma
 obs: 100,000   outcome race: 6 levels, base 'White'
 log-likelihood: -101232.01   null: -107880.18   pseudo R2: 0.061625   AIC: 202554.02   BIC: 202982.1
@@ -122,7 +122,7 @@ ns.ranef("puma").collect()         # each PUMA's, around its state's
 ```
 
 ```text
-UserWarning: race ~ age10 + female + log_income + owner + urban: the random intercepts by
+UserWarning: race ~ 1 + age10 + female + log_income + owner + urban: the random intercepts by
 ['state'] have an estimated variance of zero in some direction (held at the floor, an sd of
 0.001; a boundary or 'singular' fit): those groups differ no more than chance allows, beyond
 the other terms; consider dropping the grouping. ...
@@ -225,8 +225,8 @@ for method in ["laplace", "adaptive"]:
 ```
 
 ```text
-laplace : variance 0.461 (sd 0.679, se 0.013); 11.4 s
-adaptive: variance 0.615 (sd 0.784, se 0.016); 5.0 s
+laplace : variance 0.461 (sd 0.679, se 0.013); 7.4 s
+adaptive: variance 0.615 (sd 0.784, se 0.016); 4.1 s
 ```
 
 (The simulation's variance is 0.64.) It starts from the joint-mode fit and
@@ -396,7 +396,7 @@ coefficients can be a few tenths of a standard error away. Here, with 500
 rows per PUMA:
 
 ```text
-joint mode vs Laplace: largest difference 0.183 standard errors; 2.0 s vs 6.9 s
+joint mode vs Laplace: largest difference 0.183 standard errors; 2.5 s vs 9.2 s
 ```
 
 Each step is one read of the data, as with the fixed effect: for a given

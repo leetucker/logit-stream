@@ -25,7 +25,7 @@ fit.summary()
 ```
 
 ```text
-### chosen ~ cost + time + C(alt) + income_car
+### chosen ~ 1 + cost + time + C(alt) + income_car
 Nested logit (logit_stream, Newton)   vcov: hetero
 choice sets: 50,000   alternatives (rows): 134,988
 nests (alt): rail: train, metro; road: car

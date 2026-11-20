@@ -68,7 +68,7 @@ mx = mixlogit_stream("chosen ~ cost + time + C(alt) + income_car", panel, case="
 print(mx.tidy().select("Coefficient", "Estimate", "Std. Error"))
 
 # ---- reporting: hdfe-stream's methods, for every result
-print(race.confint(joint=True, keep="female"))
+print(race.confint(joint=True, keep="female", seed=1))
 print(race.wald_test(keep="log_income"))
 race.summary_json(OUT / "race.json", coefficients=True)
 

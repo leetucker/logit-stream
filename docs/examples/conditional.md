@@ -22,7 +22,7 @@ fit.summary()
 ```
 
 ```text
-### chosen ~ cost + time + C(alt) + income:C(alt)
+### chosen ~ 1 + cost + time + C(alt) + income:C(alt)
 Conditional logit (logit_stream, Newton)   vcov: hetero
 choice sets: 50,000   alternatives (rows): 134,988   case: case
 log-likelihood: -39388.55   null: -48517.828   pseudo R2: 0.188163   AIC: 78789.099   BIC: 78842.018

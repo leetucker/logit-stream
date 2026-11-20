@@ -18,7 +18,8 @@ X = "age10 + female + log_income + owner + urban"
 race = mlogit_stream(f"race ~ {X} | puma", people, levels=RACES, vcov={"CRV1": "puma"},
                      verbose=False)
 race.summary()
-print(race.fixef("puma").head(4).collect())      # one column per non-base level
+print(race.fixef("puma").select("puma", pl.col("^fe_.*$"), "n_obs").head(4).collect())
+# one column per non-base level, and their standard errors (se_puma:<level>)
 
 # the ordered logit's is a shift of the latent index, with cut1 = 0
 educ = ologit_stream(f"education ~ {X} | puma", people, verbose=False)
@@ -40,7 +41,7 @@ print(f"time: absorbed {absorbed.diagnostics['seconds_total']:.1f} s, "
 # for it (its effect is minus infinity), shown as a null
 fx = race.fixef("puma").collect()
 print("PUMA-level cells with no one of that race:",
-      fx.select(pl.sum_horizontal(pl.all().exclude("puma", "n_obs").is_null().cast(int)))
+      fx.select(pl.sum_horizontal(pl.col("^fe_.*$").is_null().cast(int)))
         .sum().item())
 print(race.diagnostics["separation"])
 
