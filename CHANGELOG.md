@@ -9,7 +9,8 @@ New
   conditional mode, as lme4's `nAGQ > 1`. It removes the Laplace approximation's bias with small
   groups. In a simulation with about 3 rows per group and variance 0.64, Laplace's estimate was
   0.494 and adaptive quadrature's 0.644. It agrees with brute-force maximum likelihood to 1e-6
-  standard errors in the tests, and in the simulations was faster than the Laplace fit. Only
+  standard errors in the tests, and with lme4's `glmer(nAGQ = 9)` and ordinal's `clmm(nAGQ = 9)`
+  (estimates to 2e-4 standard errors, with groups of 80 and of 3.5 rows), and in the simulations was faster than the Laplace fit. Only
   the iid variance is available with it, on the CPU.
 - **`random_method="adaptive"` for the multinomial logit**: adaptive Gauss-Hermite quadrature for
   the (J - 1)-vector of random intercepts of one grouping (`mlogit_stream`, optionally within an
@@ -28,7 +29,8 @@ New
   (default) picks between `"blocks"`, exact Newton steps with each group's information dense,
   and `"contraction"`, the constants by count matching and the coefficients' information net of
   them by conjugate gradients. Both agree with the dummy-coded fit, for one and two dimensions,
-  to 1e-6 in the estimates and standard errors. With one dimension and the blocks, `fixef()` has
+  to 1e-6 in the estimates and standard errors, and with pyfixest's `fepois` with choice-set and
+  establishment fixed effects. With one dimension and the blocks, `fixef()` has
   the constants' standard errors and `draw_parameters` draws them jointly with the
   coefficients. Robust and clustered (CRV1) variances, from each set's score net of the
   constants, work with either solver and any number of dimensions.

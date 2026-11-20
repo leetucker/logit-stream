@@ -211,7 +211,10 @@ standard error) and 0.1% at 11.
 Gauss-Hermite quadrature: `random_nodes` points (default 9) centred at the
 group's conditional mode and scaled by its conditional sd, as lme4's
 `nAGQ > 1` does. It is the maximum-likelihood fit to the quadrature's
-accuracy (the tests check it against brute-force integration). It is
+accuracy. The tests check it against brute-force integration, and
+against lme4's `glmer(nAGQ = 9)` and ordinal's `clmm(nAGQ = 9)`, with
+groups of about 80 and of about 3.5 rows: the estimates agree to 2e-4
+standard errors, the standard errors and the sd to 1e-4. It is
 available for **one random grouping with a scalar intercept**: the binary
 logit (`logit_stream`) and the ordered logit, optionally within an absorbed
 fixed effect that the groups nest in:

@@ -290,3 +290,26 @@ def test_robust_variances_are_the_dummy_fits(vcov):
         k = list(rv.coefnames).index("dist")
         np.testing.assert_allclose(np.sqrt(f.vcov[0, 0]), np.sqrt(rv.vcov[k, k]), rtol=1e-5)
         assert not np.isclose(f.vcov[0, 0], f.all_vcovs["iid"][0][0, 0], rtol=1e-3)
+
+
+def test_matches_pyfixest_poisson():
+    """pyfixest's fepois with choice-set and establishment fixed effects is
+    the same model (Guimaraes, Figueiredo and Woodward 2003): the estimate,
+    and with pyfixest's small-sample factors off, the iid standard error;
+    the CRV1 ones (by firm, and by choice set for the robust one) carry this
+    package's G / (G - 1)."""
+    pf = pytest.importorskip("pyfixest")
+    df = _without_separation(_data(seed=10, F=40))
+    pdf = df.to_pandas()
+    off = pf.ssc(k_adj=False, G_adj=False)
+    G = {"firm": df["firm"].n_unique(), "case": df["case"].n_unique()}
+    for ours, theirs, factor in [("iid", "iid", 1.0),
+                                 ({"CRV1": "firm"}, {"CRV1": "firm"}, G["firm"] / (G["firm"] - 1)),
+                                 ("hetero", {"CRV1": "case"}, G["case"] / (G["case"] - 1))]:
+        f = clogit_stream("chosen ~ dist | estab", df, case="case", vcov=ours, verbose=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            p = pf.fepois("chosen ~ dist | case + estab", data=pdf, vcov=theirs, ssc=off,
+                          iwls_tol=1e-12)
+        assert f.beta[0] == pytest.approx(p.coef()["dist"], abs=1e-9)
+        assert f.se[0] == pytest.approx(p.se()["dist"] * np.sqrt(factor), rel=1e-6)

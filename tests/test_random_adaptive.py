@@ -355,3 +355,64 @@ def test_predict_within_a_fixed_effect():
     xb = f.beta[0] * df["x1"].to_numpy() + f.beta[1] * df["x2"].to_numpy()
     want = xb + np.array([fe[c] for c in df["cell"]]) + np.array([ra[g] for g in df["g"]])
     np.testing.assert_allclose(out["prediction"].to_numpy(), want, atol=1e-10)
+
+
+# ---------------------------------------------------------------- lme4 and ordinal
+# R 4.5.3, lme4 2.0.6, ordinal 2026.7.26: glmer(y ~ x1 + x2 + (1 | g),
+# family = binomial, nAGQ = 9, control = glmerControl(optimizer = "bobyqa",
+# tolPwrss = 1e-10)) and clmm(factor(y, ordered) ~ x1 + x2 + (1 | g),
+# nAGQ = 9, control = clmm.control(gradTol = 1e-8)): coefficients (and
+# cutpoints), standard errors, sd and log-likelihood. The small-group data
+# are _small(J, seed, G=1500), about 3.5 rows per group, where the 9-node
+# fit's sd is 10% above Laplace's (0.711 for glmer, 0.814 for clmm).
+_R_ADAPTIVE = {
+    "binary": dict(
+        b=[-0.480491406081, 0.799850112566, -0.395917993135],
+        se=[0.09767453231, 0.03727625461, 0.06816114011], sd=0.6821170519,
+        ll=-2815.23320424),
+    "binary_small": dict(
+        b=[0.080970153449, 0.667969302820, -0.463272444384],
+        se=[0.04584342545, 0.03543123848, 0.06578417055], sd=0.7872884463,
+        ll=-3397.27782991),
+    "ordered": dict(
+        b=[0.748061116359, -0.539485007991, -0.983015255808, 0.264954740707, 1.501079453275],
+        se=[0.03328296189, 0.06300365676, 0.07701684697, 0.07548087413, 0.07999403410],
+        sd=0.4769791835, sd_se_log=0.11620836089, ll=-4708.25704283),
+    "ordered_small": dict(
+        b=[0.653652067369, -0.374053526321, -0.924757256671, 0.237859999079, 1.380698294052],
+        se=[0.03009022173, 0.05702161668, 0.04722858723, 0.04519579763, 0.05052941142],
+        sd=0.8696587522, sd_se_log=0.05466756679, ll=-6840.22457653),
+}
+
+
+@pytest.mark.parametrize("case", list(_R_ADAPTIVE))
+def test_matches_lme4_and_clmm_nagq9(case):
+    ref = _R_ADAPTIVE[case]
+    if case.startswith("binary"):
+        df = _binary_data() if case == "binary" else _small(2, seed=0, G=1500)
+        f = logit_stream("y ~ x1 + x2", df, random="g", random_method="adaptive",
+                         random_nodes=9, verbose=False, iwls_tol=1e-12, random_tol=1e-10)
+    else:
+        df = _ordered_data() if case == "ordered" else _small(4, seed=1, G=1500)
+        f = ologit_stream("y ~ x1 + x2", df, random="g", random_method="adaptive",
+                          random_nodes=9, verbose=False, tol=1e-12, random_tol=1e-10)
+    se = np.array(ref["se"])
+    assert np.all(np.abs(f.beta - np.array(ref["b"])) < 2e-4 * se), (f.beta - ref["b"]) / se
+    np.testing.assert_allclose(f.se, se, rtol=1e-4)
+    info = f.random_effects["g"]
+    assert info["sd"][0] == pytest.approx(ref["sd"], rel=1e-4)
+    if "sd_se_log" in ref:
+        assert info["sd_se"][0] == pytest.approx(ref["sd"] * ref["sd_se_log"], rel=1e-3)
+    assert f.loglik == pytest.approx(ref["ll"], abs=1e-4)
+
+
+def test_conditional_sds_match_lme4_condvar():
+    """lme4 2.0.6: sqrt(attr(ranef(m, condVar = TRUE)$g, "postVar")) at
+    nAGQ = 1, for the first five groups, and their modes."""
+    f = logit_stream("y ~ x1 + x2", _binary_data(), random="g", verbose=False,
+                     iwls_tol=1e-12, random_tol=1e-8)
+    r = f.ranef().collect().sort("g").head(5)
+    np.testing.assert_allclose(r["sd_g"].to_numpy(), [0.2358204717, 0.2504927298, 0.2485935073,
+                                                      0.2540268490, 0.2266307957], rtol=1e-4)
+    np.testing.assert_allclose(r["re_g"].to_numpy(), [0.8707959556, -0.7249039174, 0.3515104351,
+                                                      -1.1491353540, 0.4434548688], atol=1e-4)
