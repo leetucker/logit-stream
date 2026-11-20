@@ -252,6 +252,17 @@ def level_se(result):
     return np.sqrt(var)[info["keep"]][:, None]
 
 
+def _result_order(result, b):
+    """A draw of the model's coefficients in the result's order: the binary
+    logit reports its cutpoint (the model's last) as the intercept, minus it,
+    first."""
+    names = list(result.coefnames)
+    if names and names[0] == "Intercept" and getattr(result, "family", None) in ("logit",
+                                                                              "probit"):
+        return np.r_[-b[-1], b[:-1]]
+    return b
+
+
 def draw(result, n, seed=None):
     """`n` copies of `result` at independent draws of its parameters (see
     the module docstring)."""
@@ -280,7 +291,7 @@ def draw(result, n, seed=None):
         if kind == "adaptive_mnl":
             d, own = info["d"], info["own"]
             ps = info["psi"] + L @ rng.standard_normal(len(info["psi"]))
-            beta = ps[:P]
+            beta = _result_order(result, ps[:P])
             Sigma = _sigma_of_psi(ps[P:], own, d)
             if info["alpha"] is not None:
                 A = info["alpha"] - info["M"] @ (ps - info["psi"])
@@ -317,7 +328,7 @@ def draw(result, n, seed=None):
                 levels = A[info["keep"]]
         else:
             th = info["theta"] + L @ rng.standard_normal(len(info["theta"]))
-            beta = th[:P]
+            beta = _result_order(result, th[:P])
             if info["nu_free"]:
                 tau = float(np.exp(th[P]))
             else:
@@ -1236,14 +1247,10 @@ def _mnl_location(res, X, f, fname):
     xn = list(res._spec["xcols"])
     beta = np.asarray(res.beta, float)
     E = np.zeros((X.shape[0], J))
+    # (X has every design column, the intercept's ones among them)
     for j, lv in enumerate(levels[1:], start=1):
-        k = 0
-        for nm in xn:
-            if nm == "Intercept":
-                E[:, j] += beta[pos[f"{lv}:Intercept"]]
-            else:
-                E[:, j] += X[:, k] * beta[pos[f"{lv}:{nm}"]]
-                k += 1
+        for k, nm in enumerate(xn):
+            E[:, j] += X[:, k] * beta[pos[f"{lv}:{nm}"]]
     if fname:
         t = res._spec["fixef"][fname]
         Af = np.column_stack([t[f"fe_{fname}:{lv}"].fill_null(float("-inf")).to_numpy()

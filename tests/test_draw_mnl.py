@@ -141,3 +141,25 @@ def test_laplace_draws_refused_but_group_draws_allowed():
         lap.draw_parameters(2)
     t = lap.draw_ranef(seed=1).ranef().collect()
     assert t.height == 80 and t["sd_g:1"].min() > 0
+
+
+def test_location_with_an_intercept():
+    """The rows' linear predictors the draws use, with an intercept among
+    the design's columns: those of predict at the same parameters."""
+    from logit_stream.draws import _mnl_location, _ranef_rows
+    rng = np.random.default_rng(3)
+    n = 600
+    g = rng.integers(0, 60, n)
+    x, x2 = rng.normal(size=n), rng.normal(size=n)
+    y = rng.integers(0, 3, n)
+    df = pl.DataFrame({"y": y, "x": x, "x2": x2, "g": g})
+    fit = mlogit_stream("y ~ x + x2", df, random="g", random_method="adaptive", verbose=False)
+    lf, k, fname = _ranef_rows(fit, "g", ["g"])
+    rows = lf.collect()
+    X = rows.select([f"__x{j}" for j in range(k)]).to_numpy()
+    E = _mnl_location(fit, X, None, None)
+    b = dict(zip(fit.coefnames, fit.beta))
+    for j in (1, 2):
+        want = b[f"{j}:Intercept"] + b[f"{j}:x"] * X[:, 1] + b[f"{j}:x2"] * X[:, 2]
+        np.testing.assert_allclose(E[:, j], want, rtol=1e-12)
+

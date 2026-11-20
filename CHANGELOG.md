@@ -75,13 +75,78 @@ New
   `draw_parameters` is available: each level's variance given the coefficients, plus what the
   coefficients' uncertainty adds.
 - **`ranef()` has each group's conditional sd** (`sd_<grouping>`, or `sd_<grouping>:<level>` for
-  the multinomial logit): lme4's `condVar`, at the estimates.
+  the multinomial logit): lme4's `condVar`, at the estimates (checked against it).
+- **`predict(type="draw", seed=m)`: draws of the outcome, for imputation.** A 0 or 1 for the
+  binary logit and probit, a level (`drawn`) for the ordered and multinomial logit, one
+  alternative per choice set (`drawn`, True at the drawn row) for the conditional and nested
+  logit, also with `calibrate=`. Each draw's uniform depends only on the seed and the row's
+  identifier (`id=`, default the row's position; for choice sets, the `case` columns, with the
+  alternatives ordered by `alt=`), not on the batches or the rows' order. Lazy, as `predict`.
+- **`pool` and `pool_matrix`: Rubin's rules** for combining the analyses of multiply imputed
+  data. `pool` takes a frame of scalar estimates and standard errors, one row per imputation and
+  statistic (`by=`), and returns each statistic's pooled estimate, standard error, degrees of
+  freedom (Barnard and Rubin's with `df_com=`), interval, relative increase in variance and
+  fraction of missing information; `se=None` for statistics of a whole population, without
+  sampling variance. `pool_matrix` takes M fitted results (or arrays of estimates and
+  covariances) and returns a `PooledEstimate` with the total covariance, `tidy()`, and
+  `wald_test()`, Li, Raghunathan and Rubin's D1 joint test. Checked against R's mice
+  (`pool.scalar`) and mitml (D1).
+- **`predict(effects="average")`** for random intercepts (binary, ordered and multinomial
+  logit): probabilities averaged over each group's effect distribution, its conditional one
+  given its rows (normal, at its mode with its conditional covariance) or, for a group the fit
+  did not see, the prior N(0, Sigma), instead of the probability at the group's mode or the mean
+  effect, which is too extreme. By Gauss-Hermite quadrature; checked against brute-force
+  integration, and calibrated on simulated new groups where the probabilities at the mean
+  effect are not. The results now keep each group's full conditional covariance (the diagonal
+  is `ranef()`'s sds).
+- **`lr_test(restricted, full)`**: the likelihood-ratio test of nested models, on the
+  difference in `n_params`. `boundary="auto"` (default) uses the 50:50 mixture of chi2(0) and
+  chi2(1) when the full model adds one variance (a scalar random intercept, or a mixed logit's
+  random coefficient), `True` Stram and Lee's mixture of chi2(df - 1) and chi2(df), `False`
+  the plain chi2(df). Refuses penalized fits and analytic weights. Checked against R's anova.
+- **Random slopes by region in `clogit_stream`** (experimental): `random={"cz": "dist"}` (or a
+  list of covariates) gives each region its own deviation in those coefficients, b_g ~ N(0,
+  Sigma). The region may be the choice set's or each alternative's; absorbed alternative
+  constants are allowed. Fitted by the exact Laplace approximation (the slopes as penalized
+  dense coefficients inside the absorbed constants' Newton steps, then the log-determinant's
+  gradient and Sigma's fixed point); checked against exact maximum likelihood and an independent
+  Laplace implementation. `ranef()`, `varcorr()`, `predict` (and `effects="average"`),
+  `calibrate=`, `sample_assignments`, `draw_parameters(newdata=)` (new regions from N(0,
+  Sigma)), clustered variances by region-containing clusters, and `lr_test` with the boundary
+  mixture.
+- **Random slopes for the binary, ordered and multinomial logit** (experimental):
+  `random={"school": ["1", "prior"]}` (one grouping, optionally within an absorbed fixed
+  effect), the intercept and slopes correlated (for the multinomial logit, every non-base
+  level's). Fitted by adaptive Gauss-Hermite quadrature over all the group's effects, with
+  SQUAREM acceleration; checked against R's GLMMadaptive and brute-force integration. `ranef()`,
+  `varcorr()`, `predict` (and `effects="average"`), `draw_parameters` and `ranef=True` draws
+  (importance resampling with the row design).
+
+Fixed
+- The multinomial logit's group-intercept draws (`draw_ranef`, `draw_parameters(ranef=True)`)
+  used the wrong linear predictors when the model had an intercept (no absorbed fixed effect):
+  each covariate's coefficient multiplied the column before it.
+- The binary logit's parameter draws with an adaptive random intercept and no fixed effect
+  returned the coefficients in the fit's internal order (the slopes, then the cutpoint) instead
+  of the result's (the intercept first), so each draw's `predict` was wrong.
+- `draw_parameters(ranef=True, newdata=...)` and `draw_ranef(newdata=...)`: the groups only in
+  `newdata` got their N(0, sd^2) draws in an order that varied from run to run, so the same seed
+  gave different imputations. They are now drawn in the groups' sorted order.
+- `sample_assignments` (experimental): a draw depended on the order of the rows of the totals
+  frame. The levels are now numbered in their values' order.
 
 Documentation
 - The random-intercepts page has a section on Laplace's small-group bias and the adaptive
   quadrature.
-- New example, "Multiple imputation": parameter and firm-intercept draws, and the imputations in
-  Polars (`examples/multiple_imputation.py`).
+- A new **Imputation** section: an overview, "Predicting at scale" and "Combining with other
+  sources" (the former "Imputation at scale" page, split; its old address redirects), "Multiple
+  imputation" (`examples/multiple_imputation.py`: students in schools; parameter and
+  school-intercept draws, `predict(type="draw")`, and pooling by `pool` and `pool_matrix`), and
+  "Choices with known totals" (calibration, moved from the conditional-logit page, and
+  constrained assignment, `examples/constrained_assignment.py`). Each page has examples of
+  where its methods have been used.
+- `benchmarks/known_totals_offset.py`: a log-share offset for the alternatives' constants against
+  estimating them, the table on "Choices with known totals".
 
 ## 0.4.0
 

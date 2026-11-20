@@ -253,3 +253,20 @@ def test_seed_and_refusals():
     lap = logit_stream("y ~ x1 + x2", _small(2), random="g", verbose=False)
     with pytest.raises(ValueError, match="random_method='adaptive'"):
         lap.draw_parameters(1)
+
+
+def test_binary_random_intercept_draws_in_the_results_order():
+    """The binary logit's draws (adaptive random intercept, no fixed effect)
+    have its coefficients' order, the intercept first: centred on the
+    estimates with their standard errors' spread."""
+    rng = np.random.default_rng(4)
+    G = 200
+    g = np.repeat(np.arange(G), 8)
+    x = rng.normal(size=len(g))
+    y = (rng.random(len(g)) < 1 / (1 + np.exp(-(-0.5 + 0.8 * x + rng.normal(0, 0.7, G)[g]))))
+    df = pl.DataFrame({"y": y.astype(int), "x": x, "g": g})
+    fit = logit_stream("y ~ x", df, random="g", random_method="adaptive", verbose=False)
+    B = np.array([d.beta for d in fit.draw_parameters(400, seed=1)])
+    assert fit.coefnames[0] == "Intercept"
+    assert np.all(np.abs(B.mean(0) - fit.beta) < 4 * fit.se / np.sqrt(400))
+    np.testing.assert_allclose(B.std(0), fit.se, rtol=0.15)
