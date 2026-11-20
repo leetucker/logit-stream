@@ -52,13 +52,15 @@ so the coefficients' include tau's uncertainty, as the Laplace fit's do.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from hdfe_stream.core.report import warn
 from numpy.polynomial.hermite import hermgauss
-from scipy.special import logsumexp
 
 from ..newton import _design, _Driver
+from .adaptive_mnl import _bysum
+from .slopes import _ord_kernel_z, _points
 
 ADAPTIVE_NODES = 9                  # the default number of nodes (random_nodes)
 MIN_NODES = 5                       # fewer: the held nodes' fixed point is biased (1 node
@@ -141,19 +143,6 @@ class _Adaptive:
         return np.concatenate(parts)
 
     # ------------------------------------------------------------ the pass
-    def _row_scores(self, r, X, y):
-        """Each row's gradient in b (slopes, then the free cutpoints)."""
-        m = self.m
-        C = m.C
-        n = len(y)
-        cut = np.zeros((n, C))
-        up, lo = np.flatnonzero(y < C), np.flatnonzero(y > 0)
-        cut[up, y[up]] += r["ga"][up]
-        cut[lo, y[lo] - 1] += r["gb"][lo]
-        if m.fix_first:
-            cut = cut[:, 1:]
-        return np.column_stack([r["s"][:, None] * X, cut])
-
     def evaluate(self, b, alpha, nu, mode, scale):
         """One read at (b, alpha, nu) with the nodes at mode + scale z: the
         log-likelihood, gradient and information (as `SimpleNamespace`
@@ -174,7 +163,15 @@ class _Adaptive:
                    pmean=np.zeros(re.U), psd=np.zeros(re.U))
         width = 8 * (P * (Kt + 2) + Kt * (12 + m.C))
         target = max(256, int(driver.chunk_bytes // width))
-        fields = ("s", "ga", "gb", "h", "haa", "hbb", "hab")
+        with np.errstate(divide="ignore"):
+            ld = np.log(scale)
+        kc = SimpleNamespace(
+            mode=np.ascontiguousarray(mode, dtype=np.float64)[:, None],
+            Rg=np.ascontiguousarray(scale, dtype=np.float64)[:, None, None], ld=ld,
+            z=np.ascontiguousarray(z, dtype=np.float64)[:, None],
+            lw=np.ascontiguousarray(lw, dtype=np.float64), Lam=np.array([[1.0 / tau2]]),
+            c0=-nu - HALF_LOG_2PI, coef=np.array([-1.0 / tau2]), Sv=np.array([tau2]),
+            jj=np.zeros(1, np.int64), k0=k0)
         for blk in re.store:
             u_all = blk[re.unit_key]
             keep = re.keep_u[u_all]
@@ -204,68 +201,67 @@ class _Adaptive:
                 st = np.r_[0, np.flatnonzero(u[1:] != u[:-1]) + 1]
                 gu = u[st]
                 gc = len(st)
-                lg = np.repeat(np.arange(gc), np.diff(np.r_[st, len(u)]))
-                A = mode[gu][:, None] + scale[gu][:, None] * z[None, :]       # gc x Kt
-                F = np.empty((gc, Kt))
-                S = np.empty((gc, Kt))
-                Gb = np.empty((gc, Kt, P))
-                rs = []
-                for k in range(Kt):
-                    r = m.rows(b, X, y, w, offset=base + A[lg, k], hessian=True)
-                    if "h" not in r:                    # a probability of 0
-                        return None
-                    F[:, k] = np.add.reduceat(r["lp"] * wt, st)
-                    S[:, k] = np.add.reduceat(r["s"], st)
-                    Gb[:, k, :] = np.add.reduceat(self._row_scores(r, X, y), st, axis=0)
-                    rs.append(r)
-                # the node weights
-                v = (np.log(scale[gu])[:, None] + lw[None, :] + F
-                     - A * A / (2 * tau2) - nu - HALF_LOG_2PI)
-                logL = logsumexp(v, axis=1)
-                if not np.all(np.isfinite(logL)):
+                if self._chunk(out, kc, b, X, y, wt, base, u, st, gu, gc) is False:
                     return None
-                pi = np.exp(v - logL[:, None])
-                out["ll"] += float(logL.sum())
-                # b: the weighted rows' information, less the nodes' covariance
-                pr = pi[lg]
-                rbar = {fd: sum(pr[:, k] * rs[k][fd] for k in range(Kt)) for fd in fields}
-                rbar["Q"] = sum(pr[:, k, None] * rs[k]["Q"] for k in range(Kt))
-                rbar["lp"] = np.zeros(len(y))
-                _, g_c, H_c = m._assemble(rbar, X, y, None, True)
-                gbar = np.einsum("gk,gkp->gp", pi, Gb)
-                D = Gb - gbar[:, None, :]
-                W = (np.sqrt(pi)[:, :, None] * D).reshape(gc * Kt, P)
-                out["gb"] += g_c
-                out["Jbb"] += H_c - W.T @ W
-                # nu
-                t = A * A / tau2 - 1.0
-                tbar = (pi * t).sum(axis=1)
-                dt = t - tbar[:, None]
-                out["gnu"] += float(tbar.sum())
-                out["Jnn"] += float((pi * 2 * A * A / tau2).sum() - (pi * dt * dt).sum())
-                out["Jbn"] -= np.einsum("gk,gkp,gk->p", pi, D, dt)
-                # the fixed effect: diagonal in its levels
-                if fe is not None:
-                    cell = fe.of_unit[gu]
-                    rcell = fe.of_unit[u]
-                    Sbar = (pi * S).sum(axis=1)
-                    dS = S - Sbar[:, None]
-                    out["ga"] += np.bincount(cell, Sbar, Gf)
-                    out["Jaa"] += (np.bincount(rcell, rbar["h"], Gf)
-                                   - np.bincount(cell, (pi * dS * dS).sum(axis=1), Gf))
-                    Q = rbar["Q"][:, 1:] if m.fix_first else rbar["Q"]
-                    Bv = np.column_stack([X * rbar["h"][:, None], Q])
-                    np.add.at(out["Jba"], rcell, Bv)
-                    np.add.at(out["Jba"], cell, -np.einsum("gk,gkp,gk->gp", pi, D, dS))
-                    out["Jan"] -= np.bincount(cell, (pi * dS * dt).sum(axis=1), Gf)
-                # the centre node: the mode's score and curvature; the posterior moments
-                out["score0"][gu] = S[:, k0]
-                out["curv0"][gu] = np.add.reduceat(rs[k0]["h"], st)
-                pm = (pi * A).sum(axis=1)
-                out["pmean"][gu] = pm
-                out["psd"][gu] = np.sqrt(np.maximum((pi * A * A).sum(axis=1) - pm * pm, 0.0))
-        from types import SimpleNamespace
         return SimpleNamespace(**out)
+
+    def _chunk(self, out, kc, b, X, y, wt, base, u, st, gu, gc):
+        """One chunk of whole groups into `out`, by the random slopes'
+        kernels with one effect, a = mode + scale z: their score in Sigma^-1's
+        one element, coef (Sv - a^2) with coef = -1 / tau^2 and Sv = tau^2,
+        is a^2 / tau^2 - 1, the score in nu = log tau. False if a row's
+        probability is 0."""
+        m = self.m
+        P, K, C = m.P, m.K, m.C
+        n = len(y)
+        Kt = len(kc.lw)
+        nE = P + 1
+        X = np.ascontiguousarray(X, dtype=np.float64)
+        A, vx = np.empty((gc, Kt, 1)), np.empty((gc, Kt))
+        _points(kc.mode, kc.Rg, kc.ld, gu.astype(np.int64), kc.z, kc.lw, kc.Lam, kc.c0, A, vx)
+        logL, pi = np.empty(gc), np.empty((gc, Kt))
+        Wd, tbar = np.empty((gc, Kt, nE)), np.empty((gc, 1))
+        Sbar, vdS, fev = np.empty(gc), np.empty(gc), np.empty((gc, nE))
+        R, Qb = np.empty((n, 7)), np.empty((n, C))
+        sc0, cv0 = np.empty((gc, 1)), np.empty((gc, 1, 1))
+        pm, pc = np.empty((gc, 1)), np.empty((gc, 1, 1))
+        _ord_kernel_z(np.ascontiguousarray(base + X @ b[:K]), A, np.ones((n, 1)), vx,
+                      np.ascontiguousarray(m.cuts(b), dtype=np.float64), y.astype(np.int64),
+                      np.ascontiguousarray(wt, dtype=np.float64), X,
+                      np.r_[st, n].astype(np.int64), kc.k0, m.link.name == "probit",
+                      m.hmode(True), bool(m.fix_first), kc.coef, kc.Sv, kc.jj, kc.jj, logL, pi,
+                      Wd, tbar, Sbar, vdS, fev, R, Qb, sc0, cv0, pm, pc)
+        if not np.all(np.isfinite(logL)):
+            return False
+        out["ll"] += float(logL.sum())
+        rbar = dict(zip(("s", "ga", "gb", "h", "haa", "hbb", "hab"), R.T))
+        rbar["Q"] = Qb
+        rbar["lp"] = np.zeros(n)
+        _, g_c, H_c = m._assemble(rbar, X, y, None, True)
+        Wd = Wd.reshape(gc * Kt, nE)
+        WW = Wd.T @ Wd                      # the points' covariance of the scores
+        out["gb"] += g_c
+        out["Jbb"] += H_c - WW[:P, :P]
+        # nu: sum_k pi_k 2 a^2 / tau^2 = 2 (tbar + 1)
+        out["gnu"] += float(tbar.sum())
+        out["Jnn"] += float(2.0 * (tbar + 1.0).sum() - WW[P, P])
+        out["Jbn"] -= WW[:P, P]
+        fe = self.fe
+        if fe is not None:
+            Gf = fe.G
+            cell = fe.of_unit[gu]
+            rcell = fe.of_unit[u]
+            out["ga"] += np.bincount(cell, Sbar, Gf)
+            out["Jaa"] += np.bincount(rcell, rbar["h"], Gf) - np.bincount(cell, vdS, Gf)
+            Q = Qb[:, 1:] if m.fix_first else Qb
+            out["Jba"] += (_bysum(rcell, np.column_stack([X * rbar["h"][:, None], Q]), Gf)
+                           - _bysum(cell, fev[:, :P], Gf))
+            out["Jan"] -= np.bincount(cell, fev[:, P], Gf)
+        out["score0"][gu] = sc0[:, 0]
+        out["curv0"][gu] = cv0[:, 0, 0]
+        out["pmean"][gu] = pm[:, 0]
+        out["psd"][gu] = np.sqrt(np.maximum(pc[:, 0, 0], 0.0))
+        return True
 
     # ------------------------------------------------------------ the step
     def _system(self, E, nu_free):

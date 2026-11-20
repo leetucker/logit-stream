@@ -36,6 +36,7 @@ import numba as nb
 import numpy as np
 import polars as pl
 
+from ..models import _ord_terms
 from .adaptive_mnl import (
     _E,
     HALF_LOG_2PI,
@@ -159,6 +160,217 @@ def _mnl_kernel_z(E0, A, Z, r, vx, y, w, X, st, kc, logL, pi, Pbar, PP, Ds, Db, 
                         wac = (pa if la == lc else 0.0) - pa * p[ii, kc, lc + 1]
                         for tc in range(r):
                             curv0[g, ia, lc * r + tc] += wi * wac * Z[i, ta] * Z[i, tc]
+
+
+def _points_py(mode, Rg, logdetR, gu, z, lw, Lam, c0, A, vx):
+    """Each group's quadrature points, a = mode + R z_k (A), and the log of
+    their weight times the N(0, Sigma) density over the standard normal's
+    (vx: lw_k + log det R - a' Lam a / 2 + c0)."""
+    G, Kt, q = A.shape
+    for gi in nb.prange(G):         # (nb.prange is range in the serial compilation)
+        g = gu[gi]
+        for k in range(Kt):
+            for a in range(q):
+                v = mode[g, a]
+                for c in range(q):
+                    v += Rg[g, a, c] * z[k, c]
+                A[gi, k, a] = v
+            quad = 0.0
+            for a in range(q):
+                t = 0.0
+                for c in range(q):
+                    t += A[gi, k, c] * Lam[c, a]
+                quad += t * A[gi, k, a]
+            vx[gi, k] = lw[k] + logdetR[g] + c0 - 0.5 * quad
+
+
+_points_par = nb.njit(parallel=True, cache=True, error_model="numpy")(_points_py)
+_points_ser = nb.njit(cache=True, error_model="numpy")(_points_py)
+POINTS_PARALLEL_MIN = 2_000_000     # multiply-adds: below, a parallel launch costs more
+
+
+def _points(mode, Rg, logdetR, gu, z, lw, Lam, c0, A, vx):
+    """`_points_py`, in parallel over the groups when there is enough work
+    (the multinomial's chunks hold few groups, each with many points)."""
+    G, Kt, q = A.shape
+    fn = _points_par if G * Kt * q * q >= POINTS_PARALLEL_MIN else _points_ser
+    fn(mode, Rg, logdetR, gu, z, lw, Lam, c0, A, vx)
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _ord_kernel_z(E0, A, Z, vx, cuts, y, w, X, st, kc, probit, hmode, fix_first, coef, Sv, jj,
+                  ll_, logL, pi, Wd, slbar, Sbar, vdS, fev, R, Qb, score0, curv0, pmean, pcov):
+    """The ordered (and binary) logit's chunk of `_AdaptiveSlopes._accumulate`
+    in one pass over its groups: at each group's point k the rows' linear
+    predictors are E0_i + sum_t Z[i, t] A[g, k, t], and their pieces those
+    of `_Ordered.rows` (`_ord_terms`).
+
+    Per group: the log-integral (logL, NaN where a row's probability is 0)
+    and the points' posterior weights pi; at each point the deviation from
+    its posterior mean of the score in E = (b, the cutpoints less the first
+    with `fix_first`, Sigma^-1's elements), weighted by sqrt(pi) (Wd: its
+    sum of outer products is the information's between-point part); the
+    posterior mean of the score in Sigma^-1's elements, coef (Sv - a_j a_l)
+    (slbar); for the fixed effect, the posterior mean of the score in eta
+    (Sbar), its posterior variance (vdS) and its posterior covariance with
+    the score in E (fev); the centre point kc's score and curvature in the
+    effects; the effects' posterior mean and covariance. Per row: the
+    pi-weighted means of `rows`' s, ga, gb, h, haa, hbb and hab (R, in that
+    order) and of Q (Qb)."""
+    G, Kt, q = A.shape
+    K = X.shape[1]
+    C = len(cuts)
+    nb_ = K + C
+    P = nb_ - (1 if fix_first else 0)
+    ns = len(coef)
+    nE = P + ns
+    for g in nb.prange(G):
+        r0, r1 = st[g], st[g + 1]
+        ng = r1 - r0
+        keep = np.empty((ng, Kt, 5))
+        F = np.zeros(Kt)
+        Gk = np.zeros((Kt, nb_))
+        Sk = np.zeros(Kt)
+        bad = False
+        for k in range(Kt):
+            for ii in range(ng):
+                i = r0 + ii
+                e = E0[i]
+                for t in range(q):
+                    e += Z[i, t] * A[g, k, t]
+                yi = y[i]
+                a = cuts[yi] - e if yi < C else np.inf
+                b = cuts[yi - 1] - e if yi > 0 else -np.inf
+                Pr, ga, gb, haa, hbb, hab = _ord_terms(a, b, probit, hmode)
+                lp = np.log(Pr)
+                if not np.isfinite(lp):
+                    bad = True
+                wi = w[i]
+                F[k] += wi * lp
+                s = -(ga + gb) * wi
+                Sk[k] += s
+                for c in range(K):
+                    Gk[k, c] += s * X[i, c]
+                if yi < C:
+                    Gk[k, K + yi] += ga * wi
+                if yi > 0:
+                    Gk[k, K + yi - 1] += gb * wi
+                keep[ii, k, 0] = ga
+                keep[ii, k, 1] = gb
+                keep[ii, k, 2] = haa
+                keep[ii, k, 3] = hbb
+                keep[ii, k, 4] = hab
+        if bad:
+            logL[g] = np.nan
+            continue
+        vmax = -np.inf
+        for k in range(Kt):
+            F[k] += vx[g, k]
+            if F[k] > vmax:
+                vmax = F[k]
+        tot = 0.0
+        for k in range(Kt):
+            tot += np.exp(F[k] - vmax)
+        lg = vmax + np.log(tot)
+        logL[g] = lg
+        for k in range(Kt):
+            pi[g, k] = np.exp(F[k] - lg)
+        # the score in E at each point (the first cutpoint's column dropped
+        # with fix_first), its posterior mean, and the deviations
+        Ek = np.empty((Kt, nE))
+        for k in range(Kt):
+            c2 = 0
+            for c in range(nb_):
+                if fix_first and c == K:
+                    continue
+                Ek[k, c2] = Gk[k, c]
+                c2 += 1
+            for p in range(ns):
+                Ek[k, P + p] = coef[p] * (Sv[p] - A[g, k, jj[p]] * A[g, k, ll_[p]])
+        Eb = np.zeros(nE)
+        sbar = 0.0
+        for k in range(Kt):
+            pk = pi[g, k]
+            sbar += pk * Sk[k]
+            for c in range(nE):
+                Eb[c] += pk * Ek[k, c]
+        for p in range(ns):
+            slbar[g, p] = Eb[P + p]
+        Sbar[g] = sbar
+        v = 0.0
+        for c in range(nE):
+            fev[g, c] = 0.0
+        for k in range(Kt):
+            pk = pi[g, k]
+            rk = np.sqrt(pk)
+            ds = Sk[k] - sbar
+            v += pk * ds * ds
+            for c in range(nE):
+                dev = Ek[k, c] - Eb[c]
+                Wd[g, k, c] = rk * dev
+                fev[g, c] += pk * dev * ds
+        vdS[g] = v
+        for a in range(q):
+            score0[g, a] = 0.0
+            for c in range(q):
+                curv0[g, a, c] = 0.0
+        for ii in range(ng):
+            i = r0 + ii
+            wi = w[i]
+            yi = y[i]
+            sb = 0.0
+            gab = 0.0
+            gbb = 0.0
+            hb = 0.0
+            haab = 0.0
+            hbbb = 0.0
+            habb = 0.0
+            for k in range(Kt):
+                pk = pi[g, k]
+                ga = keep[ii, k, 0]
+                gb = keep[ii, k, 1]
+                haa = keep[ii, k, 2]
+                hbb = keep[ii, k, 3]
+                hab = keep[ii, k, 4]
+                sb += pk * (ga + gb)
+                gab += pk * ga
+                gbb += pk * gb
+                hb += pk * max(-(haa + 2.0 * hab + hbb), 0.0)
+                haab += pk * haa
+                hbbb += pk * hbb
+                habb += pk * hab
+            R[i, 0] = -sb * wi
+            R[i, 1] = gab * wi
+            R[i, 2] = gbb * wi
+            R[i, 3] = hb * wi
+            R[i, 4] = -haab * wi
+            R[i, 5] = -hbbb * wi
+            R[i, 6] = -habb * wi
+            for c in range(C):
+                Qb[i, c] = 0.0
+            if yi < C:
+                Qb[i, yi] += wi * (haab + habb)
+            if yi > 0:
+                Qb[i, yi - 1] += wi * (habb + hbbb)
+            ga = keep[ii, kc, 0]
+            gb = keep[ii, kc, 1]
+            s = -(ga + gb) * wi
+            h = wi * max(-(keep[ii, kc, 2] + 2.0 * keep[ii, kc, 4] + keep[ii, kc, 3]), 0.0)
+            for a in range(q):
+                score0[g, a] += s * Z[i, a]
+                for c in range(q):
+                    curv0[g, a, c] += h * Z[i, a] * Z[i, c]
+        for a in range(q):
+            mm = 0.0
+            for k in range(Kt):
+                mm += pi[g, k] * A[g, k, a]
+            pmean[g, a] = mm
+        for a in range(q):
+            for c in range(q):
+                vv = 0.0
+                for k in range(Kt):
+                    vv += pi[g, k] * A[g, k, a] * A[g, k, c]
+                pcov[g, a, c] = vv - pmean[g, a] * pmean[g, c]
 
 
 class _AdaptiveSlopes(_AdaptiveMNL):
@@ -298,96 +510,76 @@ class _AdaptiveSlopes(_AdaptiveMNL):
             curv += _bysum(u, cv.reshape(len(y), -1), G).reshape(G, q, q)
         return score, curv
 
-    def _row_scores(self, r, X, y):
-        m = self.m
-        C = m.C
-        n = len(y)
-        cut = np.zeros((n, C))
-        up, lo = np.flatnonzero(y < C), np.flatnonzero(y > 0)
-        cut[up, y[up]] += r["ga"][up]
-        cut[lo, y[lo] - 1] += r["gb"][lo]
-        if m.fix_first:
-            cut = cut[:, 1:]
-        return np.column_stack([r["s"][:, None] * X, cut])
-
     def _accumulate(self, out, c, X, y, w, u, z, lw, kc, off=None):
-        q, P = self.d, self.m.P
-        Kt = len(z)
-        Lam, ldL, coef, jj, ll_ = c.Lam, c.ldL, c.coef, c.jj, c.ll_
-        Sv, nE = c.Sv, c.nE
-        mode, Rg, logdetR, b, alpha = c.mode, c.Rg, c.logdetR, c.b, c.alpha
-        n = len(y)
+        q = self.d
+        Lam, ldL, mode, Rg, logdetR = c.Lam, c.ldL, c.mode, c.Rg, c.logdetR
         st = np.r_[0, np.flatnonzero(u[1:] != u[:-1]) + 1]
         gu = u[st]
         gc = len(st)
-        A = mode[gu][:, None, :] + np.swapaxes(Rg[gu] @ z.T, 1, 2)       # gc x Kt x q
-        quad = ((A @ Lam) * A).sum(axis=2)
-        vx = lw[None, :] + logdetR[gu][:, None] + 0.5 * ldL - 0.5 * quad - q * HALF_LOG_2PI
+        A, vx = np.empty((gc, len(z), q)), np.empty((gc, len(z)))
+        _points(mode, Rg, logdetR, gu.astype(np.int64), np.ascontiguousarray(z, dtype=np.float64),
+                np.ascontiguousarray(lw, dtype=np.float64), np.ascontiguousarray(Lam),
+                0.5 * ldL - q * HALF_LOG_2PI, A, vx)
         Z = np.ascontiguousarray(self.Z(X))
         if self.kind == "mlogit":
             return self._accumulate_mnl(out, c, X, y, w, u, A, vx, Z, st, gu, gc, kc)
-        lg = np.repeat(np.arange(gc), np.diff(np.r_[st, n]))
-        base = self._base(b, alpha, X, u, off)
-        F = np.empty((gc, Kt))
-        S = np.empty((gc, Kt))
-        Gb = np.empty((gc, Kt, P))
-        rs = []
+        return self._accumulate_ord(out, c, X, y, w, u, A, vx, Z, st, gu, gc, kc, off)
+
+    def _accumulate_ord(self, out, c, X, y, w, u, A, vx, Z, st, gu, gc, kc, off):
+        """The ordered (and binary) chunk: `_ord_kernel_z`, then the
+        coefficients' and Sigma's gradient and information, and the fixed
+        effect's blocks."""
+        q, P = self.d, self.m.P
+        Kt = A.shape[1]
+        coef, jj, ll_, Sv, nE = c.coef, c.jj, c.ll_, c.Sv, c.nE
+        b, alpha = c.b, c.alpha
         m = self.m
-        for k in range(Kt):
-            rr = m.rows(b, X, y, w, offset=base + (A[lg, k, :] * Z).sum(axis=1), hessian=True)
-            if "h" not in rr:
-                return False
-            F[:, k] = np.add.reduceat(rr["lp"] * w, st)
-            S[:, k] = np.add.reduceat(rr["s"], st)
-            Gb[:, k, :] = np.add.reduceat(self._row_scores(rr, X, y), st, axis=0)
-            rs.append(rr)
-        v = F + vx
-        mx = v.max(axis=1, keepdims=True)
-        logL = (mx + np.log(np.exp(v - mx).sum(axis=1, keepdims=True)))[:, 0]
+        n = len(y)
+        K, C = m.K, m.C
+        X = np.ascontiguousarray(X, dtype=np.float64)
+        E0 = self._base(b, alpha, X, u, off) + X @ b[:K]
+        logL, pi = np.empty(gc), np.empty((gc, Kt))
+        Wd, slbar = np.empty((gc, Kt, nE)), np.empty((gc, len(coef)))
+        Sbar, vdS, fev = np.empty(gc), np.empty(gc), np.empty((gc, nE))
+        R, Qb = np.empty((n, 7)), np.empty((n, C))
+        sc0, cv0 = np.empty((gc, q)), np.empty((gc, q, q))
+        pm, pc = np.empty((gc, q)), np.empty((gc, q, q))
+        wv = np.ones(n) if w is None else np.ascontiguousarray(w, dtype=np.float64)
+        _ord_kernel_z(np.ascontiguousarray(E0), np.ascontiguousarray(A), Z,
+                      np.ascontiguousarray(vx), np.ascontiguousarray(m.cuts(b), dtype=np.float64),
+                      y.astype(np.int64), wv, X, np.r_[st, n].astype(np.int64), kc,
+                      m.link.name == "probit", m.hmode(True), bool(m.fix_first),
+                      np.ascontiguousarray(coef, dtype=np.float64),
+                      np.ascontiguousarray(Sv, dtype=np.float64), np.asarray(jj, np.int64),
+                      np.asarray(ll_, np.int64), logL, pi, Wd, slbar, Sbar, vdS, fev, R, Qb,
+                      sc0, cv0, pm, pc)
         if not np.all(np.isfinite(logL)):
             return False
-        pi = np.exp(v - logL[:, None])
         out.ll += float(logL.sum())
         out.n_groups += gc
-        pr = pi[lg]
-        fields = ("s", "ga", "gb", "h", "haa", "hbb", "hab")
-        rbar = {fd: sum(pr[:, k] * rs[k][fd] for k in range(Kt)) for fd in fields}
-        rbar["Q"] = sum(pr[:, k, None] * rs[k]["Q"] for k in range(Kt))
+        rbar = dict(zip(("s", "ga", "gb", "h", "haa", "hbb", "hab"), R.T))
+        rbar["Q"] = Qb
         rbar["lp"] = np.zeros(n)
         _, g_c, H_c = m._assemble(rbar, X, y, None, True)
-        gbar = np.einsum("gk,gkp->gp", pi, Gb)
-        Db = Gb - gbar[:, None, :]
         out.gE[:P] += g_c
         out.JEE[:P, :P] += H_c
-        sl = coef[None, None, :] * (Sv[None, None, :] - A[:, :, jj] * A[:, :, ll_])
-        slbar = (pi[:, None, :] @ sl)[:, 0, :]
         out.gE[P:] += slbar.sum(axis=0)
-        Dl = sl - slbar[:, None, :]
-        DE = np.concatenate([Db, Dl], axis=2)
-        Wd = (np.sqrt(pi)[:, :, None] * DE).reshape(gc * Kt, nE)
+        Wd = Wd.reshape(gc * Kt, nE)
         out.JEE -= Wd.T @ Wd
         fe = self.fe
         if fe is not None:
             Gf = fe.G
             cell = fe.of_unit[gu]
             rcell = fe.of_unit[u]
-            Sbar = (pi * S).sum(axis=1)
-            dS = S - Sbar[:, None]
             out.ga[:, 0] += np.bincount(cell, Sbar, Gf)
-            out.Jaa[:, 0, 0] += (np.bincount(rcell, rbar["h"], Gf)
-                                 - np.bincount(cell, (pi * dS * dS).sum(axis=1), Gf))
-            Qm = rbar["Q"][:, 1:] if m.fix_first else rbar["Q"]
-            Bv = np.column_stack([X * rbar["h"][:, None], Qm])
-            np.add.at(out.JaE[:, 0, :P], rcell, Bv)
-            np.add.at(out.JaE[:, 0, :], cell, -np.einsum("gk,gke,gk->ge", pi, DE, dS))
-        out.score0[gu] = np.add.reduceat(rs[kc]["s"][:, None] * Z, st, axis=0)
-        out.curv0[gu] = np.add.reduceat(
-            (rs[kc]["h"][:, None, None] * Z[:, :, None] * Z[:, None, :]).reshape(n, -1),
-            st, axis=0).reshape(gc, q, q)
-        Ap = np.swapaxes(A * pi[:, :, None], 1, 2)
-        pm = Ap.sum(axis=2)
+            out.Jaa[:, 0, 0] += np.bincount(rcell, rbar["h"], Gf) - np.bincount(cell, vdS, Gf)
+            Qm = Qb[:, 1:] if m.fix_first else Qb
+            out.JaE[:, 0, :P] += _bysum(rcell, np.column_stack([X * rbar["h"][:, None], Qm]), Gf)
+            out.JaE[:, 0, :] -= _bysum(cell, fev, Gf)
+        out.score0[gu] = sc0
+        out.curv0[gu] = cv0
         out.pmean[gu] = pm
-        out.pcov[gu] = Ap @ A - pm[:, :, None] * pm[:, None, :]
+        out.pcov[gu] = pc
         return True
 
     def _accumulate_mnl(self, out, c, X, y, w, u, A, vx, Z, st, gu, gc, kc):

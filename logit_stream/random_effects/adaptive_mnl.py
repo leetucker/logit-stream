@@ -648,9 +648,11 @@ class _AdaptiveMNL:
 
 
 def _bysum(idx, V, G):
-    """Sums of the rows of V (n x k) by idx, G x k."""
-    out = np.zeros((G, V.shape[1]))
-    np.add.at(out, idx, V)
+    """Sums of the rows of V (n x k) by idx, G x k (by column: `np.bincount`
+    is many times faster than `np.add.at`)."""
+    out = np.empty((G, V.shape[1]))
+    for j in range(V.shape[1]):
+        out[:, j] = np.bincount(idx, V[:, j], G)
     return out
 
 

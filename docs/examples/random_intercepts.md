@@ -225,8 +225,8 @@ for method in ["laplace", "adaptive"]:
 ```
 
 ```text
-laplace : variance 0.461 (sd 0.679, se 0.013); 7.4 s
-adaptive: variance 0.615 (sd 0.784, se 0.016); 4.1 s
+laplace : variance 0.461 (sd 0.679, se 0.013); 7.2 s
+adaptive: variance 0.615 (sd 0.784, se 0.016); 2.6 s
 ```
 
 (The simulation's variance is 0.64.) It starts from the joint-mode fit and
@@ -235,7 +235,7 @@ sd, with each group's nodes held during a step and moved between steps.
 Each step is one read of the data, at about nine times a Laplace read's
 work; in the simulations above it was nonetheless faster than the Laplace
 fit, whose updates of $\Sigma$ slow down with small groups (with the 8
-covariates: 5.1 s against 13.3 s at 3 rows per firm, 8.8 s against 14.5 s
+covariates: 2.1 s against 7.8 s at 3 rows per firm, 4.1 s against 10.5 s
 at 11). To give a
 group's rows together, the first pass writes them grouped by the random
 grouping, as it does for an absorbed fixed effect (a group must fit in a
@@ -386,12 +386,28 @@ and 0.54. With tiny groups each group's posterior moves with $\Sigma$, so
 the quadrature's rounds (a Newton step with the points held, then the
 points moved) converge slowly; they are accelerated by SQUAREM.
 
+**Cost.** Each round reads the data two or more times, and each read
+evaluates every row at each of its group's points (49 for an intercept
+and a slope); tiny groups need more rounds. On about a million simulated
+rows, with two covariates, an intercept and a slope in one of them, and no
+fixed effect, on an 8-thread laptop:
+
+| model | 20,000 groups of 50 rows | 200,000 groups of 5 |
+|---|---|---|
+| binary | 15 s | 102 s |
+| ordered (4 levels) | 17 s | 139 s |
+| multinomial (J = 3: 625 points per group) | 3 to 4 minutes | over 90 minutes |
+
+Memory stayed near 1 GB in each. The multinomial's four effects per group
+(an intercept and a slope for each of its two non-base levels) make it the
+costliest by far; with tiny groups it is not yet practical at this size.
+
 The tests check the binary logit against R's GLMMadaptive (adaptive
 quadrature with the same model, and with a fixed effect as dummy
 variables): the coefficients agree to 0.01 standard errors and the sds to
 2e-3. The ordered logit and the multinomial's slopes are checked against
 brute-force integration, and the two-level multinomial against the binary
-logit (equal to 1e-6). The script's fit, with 1,500 groups, took 14 seconds.
+logit (equal to 1e-6). The script's fit, with 1,500 groups, took 3 seconds.
 
 **Testing the slope.** Against the random intercept alone, the full model
 adds the slope's variance and its covariance with the intercept. The

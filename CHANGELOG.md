@@ -10,7 +10,8 @@ New
   groups. In a simulation with about 3 rows per group and variance 0.64, Laplace's estimate was
   0.494 and adaptive quadrature's 0.644. It agrees with brute-force maximum likelihood to 1e-6
   standard errors in the tests, and with lme4's `glmer(nAGQ = 9)` and ordinal's `clmm(nAGQ = 9)`
-  (estimates to 2e-4 standard errors, with groups of 80 and of 3.5 rows), and in the simulations was faster than the Laplace fit. Only
+  (estimates to 2e-4 standard errors, with groups of 80 and of 3.5 rows), and in the simulations was faster than the Laplace fit
+  (a numba kernel parallel over the groups). Only
   the iid variance is available with it, on the CPU.
 - **`random_method="adaptive"` for the multinomial logit**: adaptive Gauss-Hermite quadrature for
   the (J - 1)-vector of random intercepts of one grouping (`mlogit_stream`, optionally within an
@@ -120,7 +121,9 @@ New
   level's). Fitted by adaptive Gauss-Hermite quadrature over all the group's effects, with
   SQUAREM acceleration; checked against R's GLMMadaptive and brute-force integration. `ranef()`,
   `varcorr()`, `predict` (and `effects="average"`), `draw_parameters` and `ranef=True` draws
-  (importance resampling with the row design).
+  (importance resampling with the row design). The binary and ordered fits run in a numba
+  kernel parallel over the groups: on about a million rows, 15 s with groups of 50 and 102 s
+  with groups of 5 (binary, an intercept and a slope).
 - **`ExperimentalWarning` across the package**: each experimental feature now warns when used,
   attributed to the caller's line -- the mixed logit, `device="cuda"`, `polars_engine="gpu"`,
   random slopes, the multinomial logit's adaptive quadrature, the group-effect draws
