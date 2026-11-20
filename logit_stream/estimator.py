@@ -238,6 +238,46 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
         raise ValueError("case= is for clogit_stream")
     if altwise and kind != "clogit":
         raise ValueError("altwise= is for clogit_stream")
+    slopes = None
+    if random is not None and kind == "clogit":
+        # random slopes by region: {grouping: covariate(s)}
+        if (not isinstance(random, dict) or len(random) != 1
+                or not all(isinstance(k, str) for k in random)):
+            raise ValueError("random= for clogit_stream is {grouping: covariate or list of "
+                             "covariates}: random slopes by one grouping, e.g. "
+                             "random={'cz': 'dist'}")
+        (region, zs), = random.items()
+        zs = [zs] if isinstance(zs, str) else list(zs)
+        if not zs or len(set(zs)) < len(zs) or not all(isinstance(z, str) for z in zs):
+            raise ValueError("random= for clogit_stream: the slopes are distinct covariates")
+        if random_method != "laplace":
+            raise ValueError("random slopes are fitted by Laplace's approximation "
+                             "(random_method='laplace')")
+        if l2 or firth:
+            raise ValueError("l2= and firth= cannot be combined with random slopes")
+        if device not in (None, "cpu"):
+            raise ValueError("random slopes run on the CPU (device='cpu')")
+        slopes = (region, zs)
+        random = None
+    slope_terms = None
+    if isinstance(random, dict) and kind in ("mlogit", "ologit"):
+        # random slopes: {grouping: ["1", "x", ...]} ("1": the intercept)
+        if len(random) != 1 or not all(isinstance(k, str) for k in random):
+            raise ValueError("random= with slopes is {grouping: terms}, for one grouping, e.g. "
+                             "random={'school': ['1', 'prior']} ('1': the intercept)")
+        (grp, terms), = random.items()
+        terms = [terms] if isinstance(terms, str) else list(terms)
+        if not terms or len(set(terms)) < len(terms) or not all(isinstance(t, str)
+                                                                  for t in terms):
+            raise ValueError("random= with slopes: the terms are distinct strings, '1' for the "
+                             "intercept and covariate names")
+        random = grp
+        if terms != ["1"]:
+            slope_terms = terms
+            if random_method == "joint-mode":
+                raise ValueError("random slopes are fitted by adaptive quadrature "
+                                 "(random_method='adaptive')")
+            random_method = "adaptive"
     if random is not None:
         if kind not in ("mlogit", "ologit"):
             raise ValueError("random= (random intercepts) is for mlogit_stream and ologit_stream")
@@ -250,7 +290,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
             raise ValueError("random_cov must be 'unstructured' or 'diagonal'")
         if random_method not in ("laplace", "joint-mode", "adaptive"):
             raise ValueError("random_method must be 'laplace', 'joint-mode' or 'adaptive'")
-        if random_nodes is None:
+        if random_nodes is None and slope_terms is None:
             random_nodes = MNL_NODES if kind == "mlogit" else ADAPTIVE_NODES
         if random_method == "adaptive":
             if len(random) != 1:
@@ -259,7 +299,9 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                 raise ValueError("random_method='adaptive' runs on the CPU (device='cpu')")
             if profile:
                 raise ValueError("profile= is not available with random_method='adaptive'")
-            if (isinstance(random_nodes, bool) or not isinstance(random_nodes, (int, np.integer))
+            if random_nodes is not None and (
+                    isinstance(random_nodes, bool) or not isinstance(random_nodes,
+                                                                     (int, np.integer))
                     or random_nodes < (MNL_MIN_NODES if kind == "mlogit" else MIN_NODES)):
                 raise ValueError(f"random_nodes must be an integer of at least "
                                  f"{MNL_MIN_NODES if kind == 'mlogit' else MIN_NODES} (with "
@@ -374,7 +416,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 random_nodes=random_nodes, fe_solver=fe_solver,
                                 firth=firth, offset=offset, start=start, device=device,
                                 link=link, altwise=altwise, budget=budget,
-                                own_covariates=own_covariates, binary=_binary))
+                                own_covariates=own_covariates, binary=_binary,
+                                slopes=slopes, slope_terms=slope_terms))
     if profile:
         from .profile import combine_profiles
         return combine_profiles(results)
@@ -387,7 +430,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
              random_tol=1e-6, random_method="laplace", random_nodes=None, fe_solver="auto",
              firth=False, offset=None, start=None,
              device=None, link="logit", altwise=False, budget=None, own_covariates=None,
-             binary=False):
+             binary=False, slopes=None, slope_terms=None):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -494,7 +537,13 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                 re_info["passes"] += info["laplace_passes"]
                 re_info["newton_steps"] += info["laplace_steps"]
                 re_info["seconds"] = round(re_info["seconds"] + info["laplace_seconds"], 3)
-            if random_method == "adaptive":
+            if random_method == "adaptive" and slope_terms is not None:
+                from .random_effects.slopes import _fit_slopes, default_nodes
+                q = (len(p0.levels) - 1 if kind == "mlogit" else 1) * len(slope_terms)
+                nodes = random_nodes if random_nodes is not None else default_nodes(q)
+                fit, re_info = _fit_slopes(driver, fe, fit, re_info, spec.fml, tol, nodes,
+                                           slope_terms, log, logger)
+            elif random_method == "adaptive":
                 fit_a = _fit_adaptive_mnl if kind == "mlogit" else _fit_adaptive
                 fit, re_info = fit_a(driver, fe, fit, re_info, spec.fml, tol, random_nodes, log,
                                      logger)
@@ -683,11 +732,15 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       random_effects=({} if random is None else {
                           f.name: {"group": f.name, "n_groups": int(f.n_eff), "Sigma": f.S.copy(),
                                    "cov": random_cov, "method": random_method,
-                                   "nodes": (int(random_nodes) if random_method == "adaptive"
+                                   "nodes": (int(re_info.get("adaptive_nodes", random_nodes or 0))
+                                             if random_method == "adaptive"
                                              else 1 if random_method == "laplace" else 0),
                                    "within": outer, "structure": fe.kind,
-                                   "levels": (list(p0.levels[1:]) if kind == "mlogit"
+                                   "levels": (list(fe.slope_labels) if slope_terms is not None
+                                              else list(p0.levels[1:]) if kind == "mlogit"
                                               else ["location"]),
+                                   **({"terms": list(slope_terms)} if slope_terms is not None
+                                      else {}),
                                    **re_info["sigma"]["by_factor"][f.name]}
                           for f in fe.random}))
         xexprs = dict(spec.x)
@@ -698,6 +751,16 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                  "incomplete": p0.incomplete}
         if fe is not None:
             rspec.update(fe.result_spec(fit.theta))
+            if slope_terms is not None:
+                # the random slopes' table, and how predict adds them
+                ss = fe.slope_spec
+                (gname,) = ss["ranef"]
+                rspec["ranef"] = ss["ranef"]
+                rspec["ranef_cov"] = ss["ranef_cov"]
+                rspec["slope_layout"] = ss["slope_layout"]
+                rspec["slope_values"] = ss["slope_values"]
+                rspec["effects"] = ([e for e in rspec["effects"] if e[2] != "random"]
+                                    + [(gname, ss["slope_values"][gname], "random_slopes")])
         rspec["draw"] = _draw_info(fe, fit, random, random_method, kind)
         if kind == "mlogit" and model.own:
             rspec["free"] = model.free().copy()

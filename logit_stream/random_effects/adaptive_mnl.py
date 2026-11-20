@@ -247,6 +247,7 @@ class _AdaptiveMNL:
         self.f = re.random[0]
         self.fe = re.fixed_factor
         self.J, self.d = re.J, re.d
+        self.Jf = re.J                      # the fixed effect's levels per group
         self.own = _sigma_params(self.d, re.cov)
         self.Ep = _E(self.d, self.own)
         self.ns = len(self.own)
@@ -327,7 +328,9 @@ class _AdaptiveMNL:
                 sl = slice(c0, c1)
                 X = _design({"X": blk["X"][sl]}, m.cols, driver.K0)
                 w = blk["w"][sl] if blk.get("w") is not None else None
-                yield X, blk["y"][sl], (np.ones(c1 - c0) if w is None else w), u_all[sl]
+                off = blk["off"][sl] if blk.get("off") is not None else None
+                yield (X, blk["y"][sl], (np.ones(c1 - c0) if w is None else w), u_all[sl],
+                       off)
 
     def _base(self, b, alpha, X, u):
         """Each row's linear predictors (n x J) without the random effect."""
@@ -353,7 +356,7 @@ class _AdaptiveMNL:
         G, d, lv = self.f.G, self.d, self.re.lv
         score, curv = np.zeros((G, d)), np.zeros((G, d, d))
         self.driver.passes += 1
-        for X, y, w, u in self._chunks(200_000):
+        for X, y, w, u, _ in self._chunks(200_000):
             E = self._base(b, alpha, X, u)
             E[:, 1:] += mode[u]
             Pr, _ = self._probs(E)
@@ -389,9 +392,10 @@ class _AdaptiveMNL:
         Gf = fe.G if fe is not None else 0
         G = self.f.G
         nE = P + ns
+        Jf = self.Jf
         out = SimpleNamespace(
-            ll=0.0, gE=np.zeros(nE), JEE=np.zeros((nE, nE)), ga=np.zeros((Gf, J)),
-            Jaa=np.zeros((Gf, J, J)), JaE=np.zeros((Gf, J, nE)), n_groups=0,
+            ll=0.0, gE=np.zeros(nE), JEE=np.zeros((nE, nE)), ga=np.zeros((Gf, Jf)),
+            Jaa=np.zeros((Gf, Jf, Jf)), JaE=np.zeros((Gf, Jf, nE)), n_groups=0,
             score0=np.zeros((G, d)), curv0=np.zeros((G, d, d)), pmean=np.zeros((G, d)),
             pcov=np.zeros((G, d, d)))
         c = SimpleNamespace(Lam=Lam, ldL=ldL, coef=coef, jj=jj, ll_=ll_, Sv=Sv, nE=nE, mode=mode,
@@ -399,20 +403,23 @@ class _AdaptiveMNL:
         # rows per chunk: the groups' points x (J + d Kx) arrays of about chunk_bytes
         width = 8 * Kt * (J + d * Kx + 4)
         rows_per = max(64, int(driver.chunk_bytes // width))
-        for X, y, w, u in self._chunks(rows_per):
+        for X, y, w, u, off in self._chunks(rows_per):
             if len(self.rules) == 1:
-                self._accumulate(out, c, X, y, w, u, *self.rules[0][:3])
+                if self._accumulate(out, c, X, y, w, u, *self.rules[0][:3], off=off) is False:
+                    return None
                 continue
             for z, lw, kc, large in self.rules:
                 sel = self.large[u] == large
                 if sel.any():
-                    self._accumulate(out, c, X[sel], y[sel], w[sel], u[sel], z, lw, kc)
+                    if self._accumulate(out, c, X[sel], y[sel], w[sel], u[sel], z, lw, kc,
+                                        off=None if off is None else off[sel]) is False:
+                        return None
         # Lambda's information: the prior's part, the same at every point
         # (-d2 of 1/2 log|Lambda| in lam_p, lam_q: 1/2 tr(S E_p S E_q))
         out.JEE[P:, P:] += out.n_groups * 0.5 * np.einsum("ab,pbc,cd,qda->pq", S, Ep, S, Ep)
         return out
 
-    def _accumulate(self, out, c, X, y, w, u, z, lw, kc):
+    def _accumulate(self, out, c, X, y, w, u, z, lw, kc, off=None):
         """One chunk's groups (whole groups), all with the rule (z, lw, kc),
         into `out`."""
         J, d, P = self.J, self.d, self.m.P
@@ -439,7 +446,7 @@ class _AdaptiveMNL:
                       np.ascontiguousarray(X, dtype=np.float64), np.r_[st, n].astype(np.int64),
                       kc, logL, pi, Pbar, Wbar, Ds, Db, sc0, cv0)
         if not np.all(np.isfinite(logL)):
-            return None
+            return False
         out.ll += float(logL.sum())
         out.n_groups += gc
         Wbar *= -1.0
@@ -492,7 +499,7 @@ class _AdaptiveMNL:
         if self.fe is None:
             return E.JEE, E.gE, None, None, None
         free = self.fe.free
-        J = self.J
+        J = self.Jf
         Daa = E.Jaa.copy()
         nf = ~free
         Daa[nf[:, :, None] | nf[:, None, :]] = 0.0

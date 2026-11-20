@@ -375,11 +375,21 @@ class LogitResult(RegressionResult):
         # that never occur in the group, and unseen groups)
         Araw = df.select(df.columns[k:k + n_fe]).to_numpy().astype(np.float64)
         A, at = None, 0
-        for _, values, kind in self._spec["effects"]:
+        for d, values, kind in self._spec["effects"]:
             block = Araw[:, at:at + len(values)]
             at += len(values)
             if kind == "random":
                 block = np.nan_to_num(block)
+            elif kind == "random_slopes":
+                # each column is a level's intercept or slope: times the row's covariate
+                block = np.nan_to_num(block)
+                lay = self._spec["slope_layout"][d]
+                xc = self._spec["xcols"]
+                width = len(self.levels) if isinstance(self, MultinomialLogitResult) else 1
+                full = np.zeros((len(block), width))
+                for c, (j, t) in enumerate(lay):
+                    full[:, j] += block[:, c] * (1.0 if t == "1" else X[:, xc.index(t)])
+                block = full
             A = block if A is None else A + block
         return X, A
 
@@ -415,27 +425,39 @@ class LogitResult(RegressionResult):
                    "adaptive": f"adaptive Gauss-Hermite quadrature, {first.get('nodes')} "
                                "nodes"}.get(first.get("method"), "Laplace approximation")
             names = list(self.random_effects)
-            struct = ("" if len(names) == 1 else
-                      " (nested: " + " in ".join(names) + ")" if first["structure"] == "tree"
-                      else " (crossed: " + " x ".join(names) + ")")
-            lines.append(f"random intercepts{struct}; {how}")
+            if first.get("structure") == "slopes":
+                for re in self.random_effects.values():
+                    sd = np.sqrt(np.diag(re["Sigma"]))
+                    sd_se = re.get("sd_se")
+                    lines.append(f"random slopes by {re['group']} ({re['n_groups']:,} regions, "
+                                 f"the {re['region_of']}'s); Laplace approximation, sd (se): "
+                                 + "   ".join(f"{lv}: {v:.4f} ({sd_se[i]:.4f})"
+                                            for i, (lv, v) in enumerate(zip(re["levels"], sd))))
+            else:
+                struct = ("" if len(names) == 1 else
+                          " (nested: " + " in ".join(names) + ")" if first["structure"] == "tree"
+                          else " (crossed: " + " x ".join(names) + ")")
+                kind_ = ("random intercepts and slopes" if first.get("terms")
+                         and "1" in first["terms"] else "random slopes" if first.get("terms")
+                         else "random intercepts")
+                lines.append(f"{kind_}{struct}; {how}")
 
-            def se(x):
-                return f" ({x:.4f})" if x is not None and np.isfinite(x) else ""
-            for re in self.random_effects.values():
-                sd = np.sqrt(np.diag(re["Sigma"]))
-                sd_se = re.get("sd_se")
-                lines.append(f"  by {re['group']} ({re['n_groups']:,} groups, {re['cov']} "
-                             "covariance), sd (se): " + "   ".join(
-                                 f"{lv}: {v:.4f}{se(sd_se[i] if sd_se is not None else None)}"
-                                 for i, (lv, v) in enumerate(zip(re["levels"], sd))))
-                if len(sd) > 1 and re["cov"] != "diagonal":
-                    R = np.asarray(re["Sigma"]) / np.outer(sd, sd)
-                    cse = re.get("corr_se")
-                    pairs = [f"{re['levels'][i]}~{re['levels'][j]}: {R[i, j]:+.3f}"
-                             + se(cse[i][j] if cse is not None else None)
-                             for i in range(len(sd)) for j in range(i + 1, len(sd))]
-                    lines.append("    correlations: " + "   ".join(pairs))
+                def se(x):
+                    return f" ({x:.4f})" if x is not None and np.isfinite(x) else ""
+                for re in self.random_effects.values():
+                    sd = np.sqrt(np.diag(re["Sigma"]))
+                    sd_se = re.get("sd_se")
+                    lines.append(f"  by {re['group']} ({re['n_groups']:,} groups, {re['cov']} "
+                                 "covariance), sd (se): " + "   ".join(
+                                     f"{lv}: {v:.4f}{se(sd_se[i] if sd_se is not None else None)}"
+                                     for i, (lv, v) in enumerate(zip(re["levels"], sd))))
+                    if len(sd) > 1 and re["cov"] != "diagonal":
+                        R = np.asarray(re["Sigma"]) / np.outer(sd, sd)
+                        cse = re.get("corr_se")
+                        pairs = [f"{re['levels'][i]}~{re['levels'][j]}: {R[i, j]:+.3f}"
+                                 + se(cse[i][j] if cse is not None else None)
+                                 for i in range(len(sd)) for j in range(i + 1, len(sd))]
+                        lines.append("    correlations: " + "   ".join(pairs))
         if self.weights:
             lines.append(f"weights: {self.weights} ({self.weights_type})")
         if self.l2:

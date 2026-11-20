@@ -137,6 +137,21 @@ _RANDOM = """
         and `varcorr`. A variance estimated at zero is held at a floor (an
         sd of 0.001), with a warning. See `logit_stream.random_effects` for
         the method.
+
+        Random slopes (experimental): a dict ``{"school": ["1", "prior"]}``
+        gives each group a random intercept ("1") and a random slope in each
+        named covariate, correlated (Sigma over all of them; for the
+        multinomial logit, each non-base level's intercept and slopes), for
+        one grouping, optionally within an absorbed fixed effect it nests
+        in. ``{"school": "prior"}`` is a slope alone. Fitted by adaptive
+        quadrature (`random_nodes` points per dimension, by default 9 for
+        one effect per group, 7 for two, 5 for more; at most 20,000 points
+        per group); not by Laplace's approximation, which is biased with
+        the small groups slopes are wanted for. `ranef` has ``re_<g>`` and
+        ``re_<g>:<x>`` (``re_<g>:<level>`` and ``re_<g>:<level>:<x>`` for
+        the multinomial) with their conditional sds; `predict`,
+        ``effects="average"`` and `draw_parameters` (with ``ranef=True``)
+        use them. See `logit_stream.random_effects.slopes`.
     random_method : {"laplace", "joint-mode", "adaptive"}, default "laplace"
         The approximation to the likelihood: Laplace's (lme4's ``nAGQ = 1``,
         ordinal's ``clmm`` default), or Laplace's with the coefficients and

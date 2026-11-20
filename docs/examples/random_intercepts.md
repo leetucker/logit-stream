@@ -311,6 +311,63 @@ rows, or rows all in one outcome level, the posterior is skewed and the
 normal is only approximate. The mode and sd do not include the
 coefficients' or $\Sigma$'s uncertainty.
 
+## Random slopes
+
+:::{admonition} Experimental
+:class: warning
+Random slopes are new; their interface may change.
+:::
+
+A covariate's coefficient can vary across groups too: the effect of a
+prior test score on proficiency may differ between schools. With
+`random={"school": ["1", "prior"]}`, each school gets a random intercept
+and a random slope in `prior`, with their covariance estimated:
+
+```python
+fit = logit_stream("proficient ~ ses + prior | district", students,
+                   random={"school": ["1", "prior"]})
+fit.varcorr()                  # sd((Intercept)), sd(prior) and their correlation
+fit.ranef().collect()          # re_school, re_school:prior and their conditional sds
+```
+
+`"1"` is the intercept; `{"school": "prior"}` gives a slope alone. With
+the ordered logit the effects shift the latent scale, and with the
+multinomial logit each non-base level has its own intercept and slopes,
+all correlated: with J = 3 and one slope, four effects per group. One
+random grouping is supported, optionally within an absorbed fixed effect
+it nests in.
+
+**How it is fitted.** By adaptive Gauss-Hermite quadrature, in as many
+dimensions as each group has effects: `random_nodes` points per dimension
+(by default 9 for one effect, 7 for two, 5 for more), centred at each
+group's mode and scaled by its conditional covariance, as for the
+[multinomial intercepts](#the-multinomial-logit). Laplace's approximation
+is not offered. Slopes are wanted most where groups are small, and there
+it is biased: on simulated binary data with 1,500 groups of about 8 rows
+and a correlated intercept and slope (sds 0.8 and 0.5), lme4's Laplace
+fit put the sds at 0.75 and 0.45, against 0.79 and 0.53 by quadrature.
+With smaller groups (about 4 rows), its were 0.72 and 0.38, against 0.82
+and 0.54. With tiny groups each group's posterior moves with $\Sigma$, so
+the quadrature's rounds (a Newton step with the points held, then the
+points moved) converge slowly; they are accelerated by SQUAREM.
+
+The tests check the binary logit against R's GLMMadaptive (adaptive
+quadrature with the same model, and with a fixed effect as dummy
+variables): the coefficients agree to 0.01 standard errors and the sds to
+2e-3. The ordered logit and the multinomial's slopes are checked against
+brute-force integration, and the two-level multinomial against the binary
+logit (equal to 1e-6). The binary fit with 1,500 groups took 9 seconds.
+
+**Prediction and imputation.** `predict` adds each group's intercept and
+slopes (0 for a group the fit did not see). `effects="average"` averages
+the probabilities over the effects' distribution, each row's being
+normal with variance z'Cz (C the group's conditional covariance, or
+$\Sigma$ for an unseen group). `draw_parameters(n, ranef=True,
+newdata=...)` draws the coefficients, the fixed effect and $\Sigma$, then
+each group's effects given its rows by importance resampling, and an
+unseen group's from N(0, $\Sigma$), for [multiple
+imputation](../imputation/multiple_imputation.md).
+
 ## How it is fitted
 
 The likelihood integrates the group effects out. It is approximated by

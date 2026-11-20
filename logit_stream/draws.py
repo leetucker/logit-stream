@@ -348,7 +348,8 @@ def _drawn(result, spec, i, beta, levels, tau, fname, fcols, Sigma=None):
     re = result.random_effects
     if re:
         # the group intercepts are not part of a draw
-        s["effects"] = [e for e in spec.get("effects", []) if e[2] != "random"]
+        s["effects"] = [e for e in spec.get("effects", [])
+                        if e[2] not in ("random", "random_slopes")]
         s["ranef_base"] = spec.get("ranef_base", spec.get("ranef", {}))   # its groups
         s["ranef"] = {}
         re = {k: dict(v) for k, v in re.items()}
@@ -611,6 +612,8 @@ def draw_ranef_many(results, seed=None, newdata=None, chunk_cells=RANEF_CHUNK_CE
     first = results[0]
     name, keys, link = _ranef_setup(first)
     rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+    if (first._spec or {}).get("slope_layout"):
+        return _draw_ranef_many_slopes(results, rng, newdata, name, keys, chunk_cells)
     if link is None:
         return _draw_ranef_many_mnl(results, rng, newdata, name, keys, chunk_cells)
     spec = first._spec
@@ -788,6 +791,282 @@ def _draw_ranef_many_mnl(results, rng, newdata, name, keys, chunk_cells):
         diag["ranef_ess"] = ess[m]
         out.append(replace(res, diagnostics=diag, _spec=s))
     return out
+
+
+def _draw_ranef_many_slopes(results, rng, newdata, name, keys, chunk_cells):
+    """`draw_ranef_many` with random slopes: each group's effects (its
+    intercepts and slopes, `slope_layout`) by importance resampling given its
+    rows, the multinomial or the ordered logit (`_slopes_sir_kernel`)."""
+    from .results import MultinomialLogitResult
+    first = results[0]
+    spec = first._spec
+    base = spec.get("ranef_base") or spec["ranef"]
+    table = base[name]
+    G = table.height
+    M = len(results)
+    mnl = isinstance(first, MultinomialLogitResult)
+    layout = spec["slope_layout"][name]
+    values = spec["slope_values"][name]
+    terms = list(first.random_effects[name]["terms"])
+    xcols = list(spec["xcols"])
+    zidx = np.array([-1 if t == "1" else xcols.index(t) for t in terms], np.int64)
+    r, q = len(terms), len(layout)
+    Sigmas = [np.asarray(r_.random_effects[name]["Sigma"], float) for r_ in results]
+    Lams = [np.linalg.inv(S) for S in Sigmas]
+    keys64 = rng.integers(0, 2**63, M)
+    draws, means, sds = np.zeros((M, G, q)), np.zeros((M, G, q)), np.zeros((M, G, q))
+    ess = np.full((M, G), np.nan)
+    seen = np.zeros(G, bool)
+    lf, k, fname = _ranef_rows(first, name, keys)
+    wscale = _weight_scale(first)
+    rows_per_chunk = max(int(chunk_cells // MNL_CANDIDATES), 1000)
+
+    def process(df):
+        gi = df["__g"].to_numpy()
+        starts = np.flatnonzero(np.r_[True, gi[1:] != gi[:-1]])
+        gid = gi[starts]
+        y = df["__y"].to_numpy()
+        w = df["__w"].to_numpy() * wscale if "__w" in df.columns else np.ones(len(gi))
+        X = (df.select([f"__x{j}" for j in range(k)]).to_numpy().astype(float) if k
+             else np.zeros((len(gi), 0)))
+        f = df["__f"].to_numpy() if fname else None
+        off = df["__off"].to_numpy() if "__off" in df.columns else None
+        Z = np.column_stack([np.ones(len(gi)) if c < 0 else X[:, c] for c in zidx])
+        st = np.r_[starts, len(gi)]
+        for m, res in enumerate(results):
+            if mnl:
+                E, cuts = _mnl_location(res, X, f, fname), np.zeros(0)
+            else:
+                eta, cuts = _location(res, X, f, off, fname)
+                E = eta[:, None]
+            dm, mu, sd, es = _slopes_draw(0 if mnl else 1, E, cuts, Z, r, y, w, st, gid,
+                                          Lams[m], int(keys64[m]))
+            draws[m, gid], means[m, gid], sds[m, gid], ess[m, gid] = dm, mu, sd, es
+        seen[gid] = True
+
+    _by_whole_groups(lf, rows_per_chunk, process)
+    for m in range(M):            # a group without rows: its prior
+        miss = np.flatnonzero(~seen)
+        if len(miss):
+            C = np.linalg.cholesky(Sigmas[m])
+            draws[m, miss] = rng.standard_normal((len(miss), q)) @ C.T
+            sds[m, miss] = np.sqrt(np.diag(Sigmas[m]))
+    new = None
+    if newdata is not None:
+        from .results import as_lazy as _lazy
+        new = (_lazy(newdata).select(keys).unique()
+               .join(table.select(keys).lazy(), on=keys, how="anti").collect().sort(keys))
+    scols = ["sd_" + c[3:] for c in values]
+    out = []
+    for m, res in enumerate(results):
+        def cols(Dr, Sd):
+            return ([pl.Series(c, Dr[:, j]) for j, c in enumerate(values)]
+                    + [pl.Series(c, Sd[:, j]) for j, c in enumerate(scols)])
+        t = table.with_columns(cols(draws[m], sds[m]))
+        if new is not None and new.height:
+            C = np.linalg.cholesky(Sigmas[m])
+            z = rng.standard_normal((new.height, q)) @ C.T
+            sdp = np.tile(np.sqrt(np.diag(Sigmas[m])), (new.height, 1))
+            add = new.with_columns(cols(z, sdp)).with_columns(
+                pl.lit(0, dtype=t.schema["n_obs"]).alias("n_obs"))
+            add = add.with_columns(pl.col(c).cast(t.schema[c]) for c in keys)
+            t = pl.concat([t, add.select(t.columns)])
+        s = dict(res._spec)
+        s["ranef_base"] = base
+        s["ranef"] = {name: t}
+        s["effects"] = ([e for e in spec["effects"] if e[2] not in ("random", "random_slopes")]
+                        + [(name, values, "random_slopes")])
+        s["ranef_drawn"] = True
+        diag = dict(res.diagnostics or {})
+        diag["ranef_mean"] = means[m]
+        diag["ranef_ess"] = ess[m]
+        out.append(replace(res, diagnostics=diag, _spec=s))
+    return out
+
+
+@nb.njit(cache=True)
+def _sl_rows(kind, E0, cuts, Z, r, y, w, r0, r1, a, Lam, s, H, need):
+    """A group's log posterior at a (up to a constant), and with `need` its
+    gradient s and information H (prior included): the multinomial (kind 0;
+    level j's predictor E0[i, j] + sum_t Z[i, t] a[(j - 1) r + t]) or the
+    ordered logit (kind 1; E0[i, 0] + Z[i] . a, the cutpoints `cuts`)."""
+    q = len(a)
+    lp = 0.0
+    if need:
+        for j in range(q):
+            s[j] = 0.0
+            for k in range(q):
+                s[j] -= Lam[j, k] * a[k]
+                H[j, k] = Lam[j, k]
+    if kind == 0:
+        J = E0.shape[1]
+        p = np.empty(J)
+        e = np.empty(J)
+        for i in range(r0, r1):
+            mx = -np.inf
+            for j in range(J):
+                v = E0[i, j]
+                if j > 0:
+                    for t in range(r):
+                        v += Z[i, t] * a[(j - 1) * r + t]
+                e[j] = v
+                if v > mx:
+                    mx = v
+            den = 0.0
+            for j in range(J):
+                p[j] = np.exp(e[j] - mx)
+                den += p[j]
+            for j in range(J):
+                p[j] /= den
+            lp += w[i] * (e[y[i]] - mx - np.log(den))
+            if need:
+                for la in range(J - 1):
+                    ra = (1.0 if y[i] == la + 1 else 0.0) - p[la + 1]
+                    for ta in range(r):
+                        ia = la * r + ta
+                        s[ia] += w[i] * ra * Z[i, ta]
+                        for lc in range(J - 1):
+                            wac = (p[la + 1] if la == lc else 0.0) - p[la + 1] * p[lc + 1]
+                            for tc in range(r):
+                                H[ia, lc * r + tc] += w[i] * wac * Z[i, ta] * Z[i, tc]
+    else:
+        C = len(cuts)
+        for i in range(r0, r1):
+            eta = E0[i, 0]
+            for t in range(r):
+                eta += Z[i, t] * a[t]
+            yi = y[i]
+            Fh, fh, gh = 1.0, 0.0, 0.0
+            if yi < C:
+                Fh = 1.0 / (1.0 + np.exp(-(cuts[yi] - eta)))
+                fh = Fh * (1.0 - Fh)
+                gh = fh * (1.0 - 2.0 * Fh)
+            Fl, fl, gl = 0.0, 0.0, 0.0
+            if yi > 0:
+                Fl = 1.0 / (1.0 + np.exp(-(cuts[yi - 1] - eta)))
+                fl = Fl * (1.0 - Fl)
+                gl = fl * (1.0 - 2.0 * Fl)
+            pr = max(Fh - Fl, 1e-300)
+            lp += w[i] * np.log(pr)
+            if need:
+                d1 = (fl - fh) / pr                       # d log p / d eta
+                hh = d1 * d1 - (gh - gl) / pr             # -d2 log p / d eta2
+                for ta in range(r):
+                    s[ta] += w[i] * d1 * Z[i, ta]
+                    for tc in range(r):
+                        H[ta, tc] += w[i] * hh * Z[i, ta] * Z[i, tc]
+    quad = 0.0
+    for j in range(q):
+        for k in range(q):
+            quad += a[j] * Lam[j, k] * a[k]
+    return lp - 0.5 * quad
+
+
+@nb.njit(parallel=True, cache=True, error_model="numpy")
+def _slopes_sir_kernel(kind, E0, cuts, Z, r, y, w, st, gid, Lam, key, n_cand, nu, draw, mean,
+                       sd, ess):
+    """`_mnl_sir_kernel` for a group's effects with a row design (see
+    `_sl_rows`)."""
+    G = len(gid)
+    q = Lam.shape[0]
+    for g in nb.prange(G):
+        r0, r1 = st[g], st[g + 1]
+        a = np.zeros(q)
+        s = np.empty(q)
+        H = np.empty((q, q))
+        for _ in range(100):
+            _sl_rows(kind, E0, cuts, Z, r, y, w, r0, r1, a, Lam, s, H, True)
+            step = np.linalg.solve(H, s)
+            big = 0.0
+            for j in range(q):
+                big = max(big, abs(step[j]))
+            if big > 2.0:
+                step *= 2.0 / big
+            a += step
+            if big < 1e-10:
+                break
+        _sl_rows(kind, E0, cuts, Z, r, y, w, r0, r1, a, Lam, s, H, True)
+        V = np.linalg.inv(H)
+        R = np.linalg.cholesky((V + V.T) / 2)
+        lw = np.empty(n_cand)
+        cand = np.empty((n_cand, q))
+        z = np.empty(q)
+        cnt = 0
+        for k in range(n_cand):
+            nz = q + nu
+            zz = np.empty(nz + 1)
+            for t in range(0, nz, 2):
+                u1 = _uniform(key, gid[g], cnt)
+                u2 = _uniform(key, gid[g], cnt + 1)
+                cnt += 2
+                rr = np.sqrt(-2.0 * np.log(u1))
+                zz[t] = rr * np.cos(2 * np.pi * u2)
+                zz[t + 1] = rr * np.sin(2 * np.pi * u2)
+            c2 = 0.0
+            for t in range(q, nz):
+                c2 += zz[t] * zz[t]
+            sc = np.sqrt(nu / c2)
+            qq = 0.0
+            for j in range(q):
+                z[j] = zz[j] * sc
+                qq += z[j] * z[j]
+            for j in range(q):
+                x = a[j]
+                for l in range(j + 1):
+                    x += R[j, l] * z[l]
+                cand[k, j] = x
+            lw[k] = (_sl_rows(kind, E0, cuts, Z, r, y, w, r0, r1, cand[k], Lam, s, H, False)
+                     + 0.5 * (nu + q) * np.log1p(qq / nu))
+        mxw = lw.max()
+        tot, tot2 = 0.0, 0.0
+        for k in range(n_cand):
+            lw[k] = np.exp(lw[k] - mxw)
+            tot += lw[k]
+            tot2 += lw[k] * lw[k]
+        ess[g] = tot * tot / tot2
+        for j in range(q):
+            m1, m2 = 0.0, 0.0
+            for k in range(n_cand):
+                m1 += lw[k] * cand[k, j]
+                m2 += lw[k] * cand[k, j] * cand[k, j]
+            m1 /= tot
+            mean[g, j] = m1
+            sd[g, j] = np.sqrt(max(m2 / tot - m1 * m1, 0.0))
+        u = _uniform(key, gid[g], cnt) * tot
+        acc = 0.0
+        pick = n_cand - 1
+        for k in range(n_cand):
+            acc += lw[k]
+            if acc >= u:
+                pick = k
+                break
+        for j in range(q):
+            draw[g, j] = cand[pick, j]
+
+
+def _slopes_draw(kind, E, cuts, Z, r, y, w, st, gid, Lam, key):
+    n = len(gid)
+    q = Lam.shape[0]
+    out = [np.empty((n, q)), np.empty((n, q)), np.empty((n, q)), np.empty(n)]
+    args = [np.ascontiguousarray(E, float), np.ascontiguousarray(cuts, float),
+            np.ascontiguousarray(Z, float), int(r), y.astype(np.int64),
+            np.ascontiguousarray(w, float)]
+    _slopes_sir_kernel(kind, *args, st.astype(np.int64), gid.astype(np.int64),
+                       np.ascontiguousarray(Lam), np.uint64(key), MNL_CANDIDATES, MNL_T_DF,
+                       *out)
+    draw, mean, sd, ess = out
+    low = np.flatnonzero(ess < MNL_ESS_MIN)
+    if len(low):
+        rows = np.concatenate([np.arange(st[g], st[g + 1]) for g in low])
+        st2 = np.r_[0, np.cumsum(st[low + 1] - st[low])]
+        o2 = [np.empty((len(low), q)), np.empty((len(low), q)), np.empty((len(low), q)),
+              np.empty(len(low))]
+        _slopes_sir_kernel(kind, args[0][rows], args[1], args[2][rows], args[3],
+                           args[4][rows], args[5][rows], st2.astype(np.int64),
+                           gid[low].astype(np.int64), np.ascontiguousarray(Lam),
+                           np.uint64(key ^ 0x5BD1E995), 16 * MNL_CANDIDATES, MNL_T_DF, *o2)
+        draw[low], mean[low], sd[low], ess[low] = o2
+    return draw, mean, sd, ess
 
 
 def _probit(u):
