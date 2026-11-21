@@ -23,6 +23,8 @@ which are in `logit_stream.simulate`.
 | `lr_test` | the likelihood-ratio test of nested models, with the boundary mixture for a variance |
 | `pool`, `pool_matrix` | combining multiply-imputed analyses by Rubin's rules, with joint tests |
 | `logit_stream.assign` | constrained assignment to known totals: `sample_assignments`, the samplers `SwapMCMC`, `ExactSmall`, `Balanced`, and `GaussianPenalty` (experimental) |
+| **[Building on the passes](core.md)** | |
+| `logit_stream.core` | the binary logit's stored design and Newton pass, for other packages' estimators (`logit_design`, `LogitDesign`, `NewtonMoments`) |
 
 ```{toctree}
 :hidden:
@@ -30,4 +32,5 @@ which are in `logit_stream.simulate`.
 estimation
 results
 utilities
+core
 ```

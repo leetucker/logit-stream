@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+For packages built on this one
+- **`logit_stream.core`**: a stable API for estimators that run their own iteration on the
+  binary logit's streamed passes (penalized-stream's penalized logit uses it). `logit_design`
+  stores the rows (pass 0), with no absorbed fixed effect or one, optional weights, and an
+  integer split column such as cross-validation folds. `LogitDesign.newton_pass` evaluates
+  several models' coefficients in one read of the rows. Each model gets its log-likelihood on
+  every split, plus its gradient and information over the splits it names, optionally for an
+  active set of covariates only; `LogitDesign.rows` iterates the stored rows for other sums.
+  `NewtonMoments.profiled` and `effects_step` eliminate the group effects exactly, so a Newton
+  step is a k x k problem whatever the number of groups.
+
 ## 0.5.0
 
 Highlights: random slopes, adaptive quadrature for small groups, and tools for imputation
