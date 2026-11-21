@@ -1,6 +1,7 @@
 """Random intercepts: groups' intercepts drawn from a normal distribution
 whose covariance is estimated; shrinkage, unseen groups, nested groupings,
-random intercepts within a fixed effect, and the ordered logit's.
+random intercepts within a fixed effect, the ordered logit's, and small
+groups (Laplace's bias, and adaptive quadrature).
 
     python examples/random_intercepts.py
 """
@@ -8,7 +9,7 @@ random intercepts within a fixed effect, and the ordered logit's.
 import numpy as np
 import polars as pl
 
-from logit_stream import mlogit_stream, ologit_stream
+from logit_stream import logit_stream, lr_test, mlogit_stream, ologit_stream
 from logit_stream.simulate import RACES, simulate_people
 
 # 200 PUMAs in 20 states; the PUMA effects are independent, with sd 0.5 in
@@ -21,6 +22,11 @@ re = mlogit_stream(f"race ~ {X}", people, levels=RACES, random="puma",
 re.summary()
 print(re.varcorr())
 print(np.round(re.random_effects["puma"]["Sigma"], 3))
+
+# ---- is there PUMA variation at all? The likelihood-ratio test against the model
+# without the random intercepts: Sigma's 15 parameters on the plain chi-squared
+plain = mlogit_stream(f"race ~ {X}", people, levels=RACES, verbose=False)
+print(lr_test(plain, re))
 
 # ---- against the fixed effect: similar coefficients, and the predicted
 # random effects of small PUMAs shrunk toward zero
@@ -63,3 +69,23 @@ print(f"joint mode vs Laplace: largest difference {np.abs(d).max():.3f} standard
 # ---- the ordered logit: one shift per PUMA
 educ = ologit_stream(f"education ~ {X}", people, random="puma", verbose=False)
 print(educ.varcorr())
+
+# ---- small groups: firms with about 3 rows each, within 50 industry-area
+# cells (absorbed); a binary outcome; firm effects with sd 0.8 (variance 0.64)
+rng = np.random.default_rng(0)
+G, cells = 30_000, 50
+cell = rng.integers(0, cells, G)
+size = 1 + rng.geometric(0.5, G)                         # 1 + Geometric: mean 3
+firm = np.repeat(np.arange(G), size)
+eta = rng.normal(0, 0.8, cells)[cell] + rng.normal(0, 0.8, G)
+y = (rng.random(len(firm)) < 1 / (1 + np.exp(-eta[firm]))).astype(int)
+firms = pl.DataFrame({"y": y, "firm": firm, "cell": cell[firm]})
+for method in ["laplace", "adaptive"]:
+    sm = logit_stream("y ~ 1 | cell", firms, random="firm", random_method=method,
+                      verbose=False)
+    info = sm.random_effects["firm"]
+    print(f"{method:8s}: variance {info['sd'][0] ** 2:.3f} (sd {info['sd'][0]:.3f}, "
+          f"se {info['sd_se'][0]:.3f}); {sm.diagnostics['seconds_total']:.1f} s")
+print(sm.ranef("firm").collect().sort("n_obs").head(3))
+# one variance on the boundary of its space: the 50:50 mixture of chi2(0) and chi2(1)
+print(lr_test(logit_stream("y ~ 1 | cell", firms, verbose=False), sm))

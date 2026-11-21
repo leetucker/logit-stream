@@ -129,25 +129,71 @@ _RANDOM = """
         `l2`. `vcov` may be ``"iid"`` or clustered by a variable that
         contains whole groups of the coarsest random grouping (crossed
         groupings allow none; not ``"hetero"``). The coefficients' standard
-        errors include Sigma's uncertainty. The predicted effects are in
+        errors include Sigma's uncertainty. The predicted effects (conditional
+        modes) and their conditional sds are in
         `ranef`, and `predict` uses them (0 for a group the fit did not
         see); Sigma, its standard errors and the sds' and correlations' (with
         intervals on the log and Fisher-z scales) are in `random_effects`
         and `varcorr`. A variance estimated at zero is held at a floor (an
         sd of 0.001), with a warning. See `logit_stream.random_effects` for
         the method.
-    random_method : {"laplace", "joint-mode"}, default "laplace"
+
+        Random slopes (experimental): a dict ``{"school": ["1", "prior"]}``
+        gives each group a random intercept ("1") and a random slope in each
+        named covariate, correlated (Sigma over all of them; for the
+        multinomial logit, each non-base level's intercept and slopes), for
+        one grouping, optionally within an absorbed fixed effect it nests
+        in. ``{"school": "prior"}`` is a slope alone. Fitted by adaptive
+        quadrature (`random_nodes` points per dimension, by default 9 for
+        one effect per group, 7 for two, 5 for more; at most 20,000 points
+        per group); not by Laplace's approximation, which is biased with
+        the small groups slopes are wanted for. `ranef` has ``re_<g>`` and
+        ``re_<g>:<x>`` (``re_<g>:<level>`` and ``re_<g>:<level>:<x>`` for
+        the multinomial) with their conditional sds; `predict`,
+        ``effects="average"`` and `draw_parameters` (with ``ranef=True``)
+        use them. See `logit_stream.random_effects.slopes`.
+    random_method : {"laplace", "joint-mode", "adaptive"}, default "laplace"
         The approximation to the likelihood: Laplace's (lme4's ``nAGQ = 1``,
         ordinal's ``clmm`` default), or Laplace's with the coefficients and
         the effects at their joint mode (lme4's ``nAGQ = 0``), which is
         faster and close to it when groups have many rows each (with ~100
         rows per group, the coefficients can be a few tenths of a standard
-        error away).
+        error away), or adaptive Gauss-Hermite quadrature (lme4's
+        ``nAGQ > 1``): the maximum likelihood to the quadrature's accuracy,
+        for one random grouping (a scalar intercept with `logit_stream` and
+        `ologit_stream`, a vector of J - 1 with `mlogit_stream`), iid
+        variance only. Laplace's approximation is biased when groups have
+        few rows (the variance by about a fifth too low with 3 rows a group
+        of a binary outcome; with a multinomial outcome also the
+        correlations, and a rare level's variance upwards); "adaptive" is
+        not. See `logit_stream.random_effects.adaptive` and
+        `logit_stream.random_effects.adaptive_mnl`.
+    random_nodes : int, optional
+        The quadrature's points per dimension with
+        ``random_method="adaptive"``: 9 by default (at least 5) for the
+        binary and ordered logit; 5 by default (at least 5) for the
+        multinomial logit, whose rule is their product over the J - 1
+        dimensions (625 points per group for J = 5; at most 20,000). With
+        the multinomial logit, groups of 30 rows or more take 3 points per
+        dimension.
     random_cov : {"unstructured", "diagonal"}, default "unstructured"
         The form of Sigma (multinomial; the ordered logit's is 1 x 1).
     random_tol : float, default 1e-6
         Convergence when an update changes Sigma by less than this,
-        relative to its largest element."""
+        relative to its largest element.
+    fe_solver : {"auto", "blocks", "contraction"}, default "auto"
+        For `clogit_stream` with absorbed alternative constants
+        (``"chosen ~ x | estab"``, one or more dimensions): how the
+        constants are solved. ``"blocks"``: exact Newton steps, with the
+        constants' information dense within each group of levels that the
+        choice sets link (with establishments chosen within firms, the
+        firms). ``"contraction"``: no blocks; the constants by count
+        matching and the coefficients' information net of them by
+        conjugate gradients. ``"auto"``: the blocks when the largest group
+        has at most 5,000 levels and they fit in memory. Both give the same
+        estimates. `draw_parameters` and the constants' standard errors
+        need one dimension and the blocks. See
+        `logit_stream.alt_fe`."""
 
 
 def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
@@ -198,6 +244,13 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
     A two-level `mlogit_stream` fits the same model, with this package's
     conventions for the variance; it is also the way to Firth's penalized
     likelihood for a binary outcome (``firth=True``).
+
+    ``random=`` (random intercepts, with ``random_method``, ``random_nodes``
+    and ``random_tol`` as for `mlogit_stream`) is fitted by this package's
+    engine, as the two-level ordered logit, with lme4's conventions for the
+    variance (no small-sample factor); ``random_method="adaptive"`` is
+    adaptive quadrature, which small groups need (see
+    `logit_stream.random_effects.adaptive`).
     """
     return _binary_fit("logit", fml, data, workdir, vcov, cluster, options)
 
@@ -206,6 +259,16 @@ def _binary_fit(family, fml, data, workdir, vcov, cluster, options):
     """A binary logit or probit: this package's fit where it can, else
     hdfe-stream's `feglm_stream`."""
     route = _binary_route(vcov, cluster, options)
+    if options.get("random") is not None:
+        # random intercepts are this package's fit only (hdfe-stream has none)
+        if route is None:
+            raise ValueError(
+                f"{family}_stream: random= is fitted by this package's engine, which does not "
+                "have every option given (bias_correction=, bootcluster=, CRV3, the "
+                "separation check switched off, ...); drop them to fit random intercepts")
+        from .estimator import _fit
+        return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
+                    _binary=True, link=family, **route)
     if route is not None:
         from .estimator import _fit, _NeedsHdfe
         try:
@@ -233,8 +296,8 @@ def _binary_route(vcov, cluster, options):
 
     from .estimator import _fit
     known = set(inspect.signature(_fit).parameters) - {
-        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2", "random",
-        "random_cov", "random_tol", "random_method", "firth", "device", "link", "altwise",
+        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2",
+        "firth", "device", "link", "altwise",
         "poisson_options", "profile", "own_covariates", "_binary"}
     opts = dict(options)
     for k in _BINARY_IGNORED:
@@ -311,7 +374,7 @@ def nlogit_stream(fml: str, data: Source, case: str | Sequence[str], alt: str,
                   weights_type: str = "aweights", offset: str | Any | None = None,
                   **options: Any):
     """Out-of-core nested logit (RU2, any depth of nests), from long-format
-    choice data as `clogit_stream` takes it (prototype).
+    choice data as `clogit_stream` takes it.
 
     Parameters
     ----------
@@ -529,6 +592,22 @@ clogit_stream.__doc__ = """Out-of-core conditional (McFadden) logit by streamed 
         other alternatives it would be a different choice set. With
         ``altwise=True`` only the incomplete alternatives are dropped (a set
         that loses its chosen alternative is then an error).
+    random : dict, optional
+        Random slopes by region (experimental): ``{"cz": "dist"}`` (or
+        ``{"cz": ["dist", "x2"]}``) gives each level of the grouping column
+        its own deviation b_g ~ N(0, Sigma) in those covariates'
+        coefficients. A row's region may be its choice set's (every
+        alternative of a set in one region: the chooser's) or its own (the
+        alternative's); the data decide, and a set may mix regions. Fitted
+        by Laplace's approximation of the marginal likelihood, with any
+        absorbed alternative constants (``| estab``); at most 2,000 regions
+        x slopes. `vcov` may be ``"iid"`` or clustered by a variable that
+        contains whole regions. `ranef` has each region's slopes and
+        conditional sds, `random_effects` and `varcorr` Sigma; `predict`
+        adds each region's slopes (0 for a region the fit did not see), and
+        ``predict(effects="average")`` averages the probabilities over
+        them; `draw_parameters` draws them with the coefficients. See
+        `logit_stream.alt_slopes`.
 
     Returns
     -------
@@ -544,7 +623,7 @@ clogit_stream.__doc__ = """Out-of-core conditional (McFadden) logit by streamed 
 
 
 mixlogit_stream.__doc__ = """Out-of-core mixed logit by streamed maximum simulated likelihood
-    (prototype: normal and lognormal coefficients, uncorrelated).
+    (experimental: normal and lognormal coefficients, uncorrelated).
 
     The conditional logit of `clogit_stream`, with the coefficients named in
     `random` varying across choosers: normal, mu + s z, or lognormal,
@@ -611,5 +690,5 @@ mixlogit_stream.__doc__ = """Out-of-core mixed logit by streamed maximum simulat
     -------
     MixedLogitResult
         `summary`, `tidy`, `confint`, `wald_test` and the other reporting
-        methods; `predict` and `resid` are not in the prototype.
+        methods; `predict` and `resid` are not available yet.
     """

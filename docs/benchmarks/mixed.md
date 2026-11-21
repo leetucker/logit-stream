@@ -1,6 +1,6 @@
 # Mixed logit (experimental)
 
-`mixlogit_stream` is a prototype (see the
+`mixlogit_stream` is experimental (see the
 [reference](../reference/estimation.md)); this benchmark checks it against
 the exact estimates and against xlogit and jaxlogit, which are built for
 the mixed logit.

@@ -58,8 +58,8 @@ and one dense solve.
 - **One interface for the logit family.** Binary logit and probit,
   multinomial logit, ordered logit and probit on ordinary data; McFadden's
   conditional logit on long-format choice data with alternative-specific
-  attributes and unbalanced choice sets, and the nested and mixed logit
-  (experimental) on the same data; Chamberlain's conditional fixed-effects
+  attributes and unbalanced choice sets, and the nested logit and the
+  mixed logit (experimental) on the same data; Chamberlain's conditional fixed-effects
   logit for short panels. See the [examples](examples/index.md).
 - **Absorbed fixed effects** for the multinomial and ordered logit
   (`"y ~ x | puma"`): each level gets its own intercept for every outcome
@@ -69,9 +69,19 @@ and one dense solve.
   number through hdfe-stream), with an optional correction of the incidental-parameter
   bias. The multinomial logit absorbs any number through the equivalent Poisson
   regression.
-- **Random intercepts** (experimental) for the multinomial and ordered
-  logit, by Laplace's approximation, with nested or crossed groupings, as
-  lme4's `glmer` and ordinal's `clmm` fit them.
+- **Random intercepts** for the binary, multinomial and ordered logit, by
+  Laplace's approximation, with nested or crossed groupings, as lme4's
+  `glmer` and ordinal's `clmm` fit them, or by adaptive quadrature for one
+  grouping (experimental for the multinomial logit). See [random
+  intercepts](examples/random_intercepts.md).
+- **Random slopes** (experimental): a covariate's coefficient varying by
+  group, correlated with the group's intercept, for the binary, multinomial
+  and ordered logit (`random={"school": ["1", "prior"]}`, by adaptive
+  quadrature; see [random slopes](examples/random_intercepts.md#random-slopes)),
+  and by region in the conditional logit (`random={"cz": "dist"}`, by
+  Laplace's approximation, the region the choice set's or each
+  alternative's; see [random slopes by
+  region](examples/conditional.md#random-slopes-by-region)).
 - **pyfixest formulas**: `C()`, `i()`, interactions, `I()` and transforms,
   multiple estimation (`csw()`, `sw()`, several outcomes), with pyfixest's own
   coefficient names and categorical coding.
@@ -83,6 +93,14 @@ and one dense solve.
   `summary_dict()`/`summary_json()`, `confint()` (pointwise or simultaneous),
   `wald_test()`, `with_vcov()`, `etable()`, and lazy `predict()`, `resid()`,
   `sample()` and `fixef()` frames.
+- **Imputation**: lazy `predict()` probabilities, or draws of the outcome
+  (`type="draw"`), for files of any size; draws of the parameters and of
+  each group's effect (`draw_parameters`, `draw_ranef`) for proper
+  multiple imputation; Rubin's-rules pooling of the analyses (`pool`,
+  `pool_matrix`); and, for choices among alternatives with known totals,
+  calibration of their constants (`predict(calibrate=)`) and constrained
+  assignment (experimental). See the [imputation](imputation/index.md)
+  section.
 - **Out of core**: one pass over the source writes the evaluated design as
   blocks; every Newton step reads them, a block ahead in a background thread.
   `storage="memory"` keeps them in memory instead; `dtype="float32"` halves
@@ -142,6 +160,7 @@ brings pyfixest), Polars, NumPy, SciPy, numba and PyArrow.
 :caption: Guide
 
 examples/index
+imputation/index
 how_it_works
 resources
 ```

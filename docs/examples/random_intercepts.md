@@ -3,7 +3,7 @@
 {download}`Download the script: random_intercepts.py <../../examples/random_intercepts.py>`
 
 `random=` fits the groups' intercepts as random effects instead of fixed
-ones (*experimental*): each group's intercepts are drawn from a normal
+ones: each group's intercepts are drawn from a normal
 distribution with mean zero and a covariance $\Sigma$ that is estimated, one
 intercept per non-base outcome level in the multinomial logit, one shift in
 the ordered logit.
@@ -21,7 +21,7 @@ re.summary()
 ```
 
 ```text
-### race ~ age10 + female + log_income + owner + urban
+### race ~ 1 + age10 + female + log_income + owner + urban
 Multinomial logit (logit_stream, Newton)   vcov: CRV1:puma
 obs: 100,000   outcome race: 6 levels, base 'White'
 log-likelihood: -101232.01   null: -107880.18   pseudo R2: 0.061625   AIC: 202554.02   BIC: 202982.1
@@ -37,7 +37,7 @@ zero. The same, as a table with 95% intervals, and $\Sigma$ itself:
 ```python
 re.varcorr()
 re.random_effects["puma"]["Sigma"]       # and "Sigma_se", its elements' standard errors
-re.ranef("puma").collect()               # each PUMA's predicted effects
+re.ranef("puma").collect()               # each PUMA's predicted effects and their sds
 ```
 
 ```text
@@ -122,7 +122,7 @@ ns.ranef("puma").collect()         # each PUMA's, around its state's
 ```
 
 ```text
-UserWarning: race ~ age10 + female + log_income + owner + urban: the random intercepts by
+UserWarning: race ~ 1 + age10 + female + log_income + owner + urban: the random intercepts by
 ['state'] have an estimated variance of zero in some direction (held at the floor, an sd of
 0.001; a boundary or 'singular' fit): those groups differ no more than chance allows, beyond
 the other terms; consider dropping the grouping. ...
@@ -182,6 +182,274 @@ educ.varcorr()
 └───────┴──────────────┴──────────┴───────────┴──────────┴──────────┘
 ```
 
+## Small groups: adaptive quadrature
+
+**Laplace's approximation is biased when groups are small.** It replaces
+each group's integral over its effect by a normal curve around the mode,
+and with a binary or ordinal outcome and only a few rows per group the
+integrand is far from normal. The variance is then underestimated, and
+by more than its standard error. The bias is a property of the
+approximation, not of this package: lme4's and `clmm`'s Laplace fits
+share it. On simulated binary data -- 30,000 firms within 50 cells
+(absorbed, `y ~ 1 | cell`), firm effects with variance 0.64, one
+simulation each:
+
+| rows per firm (mean) | Laplace | adaptive, 9 nodes | its standard error |
+|---|---|---|---|
+| 3.0 | 0.494 (-23%) | 0.644 | 0.025 |
+| 4.3 | 0.569 (-11%) | 0.664 | 0.019 |
+| 11 | 0.611 (-5%) | 0.643 | 0.011 |
+
+With about 80 rows per group the two agree to a few hundredths of a
+standard error (the 60-group data of the test suite's lme4 comparison).
+The coefficients are biased less than the variance, toward zero: with 8
+covariates added to the same simulation, Laplace's slopes were about 2%
+smaller than the maximum-likelihood ones at 3 rows per firm (up to one
+standard error) and 0.1% at 11.
+
+`random_method="adaptive"` integrates each group's effect by adaptive
+Gauss-Hermite quadrature: `random_nodes` points (default 9) centred at the
+group's conditional mode and scaled by its conditional sd, as lme4's
+`nAGQ > 1` does. It is the maximum-likelihood fit to the quadrature's
+accuracy. The tests check it against brute-force integration, and
+against lme4's `glmer(nAGQ = 9)` and ordinal's `clmm(nAGQ = 9)`, with
+groups of about 80 and of about 3.5 rows: the estimates agree to 2e-4
+standard errors, the standard errors and the sd to 1e-4. It is
+available for **one random grouping with a scalar intercept**: the binary
+logit (`logit_stream`) and the ordered logit, optionally within an absorbed
+fixed effect that the groups nest in:
+
+```python
+for method in ["laplace", "adaptive"]:
+    sm = logit_stream("y ~ 1 | cell", firms, random="firm", random_method=method)
+```
+
+```text
+laplace : variance 0.461 (sd 0.679, se 0.013); 7.2 s
+adaptive: variance 0.615 (sd 0.784, se 0.016); 2.6 s
+```
+
+(The simulation's variance is 0.64.) It starts from the joint-mode fit and
+takes full Newton steps in the coefficients, the fixed effect and the log
+sd, with each group's nodes held during a step and moved between steps.
+Each step is one read of the data, at about nine times a Laplace read's
+work; in the simulations above it was nonetheless faster than the Laplace
+fit, whose updates of $\Sigma$ slow down with small groups (with the 8
+covariates: 2.1 s against 7.8 s at 3 rows per firm, 4.1 s against 10.5 s
+at 11). To give a
+group's rows together, the first pass writes them grouped by the random
+grouping, as it does for an absorbed fixed effect (a group must fit in a
+block; `block_mb` raises the size). Restrictions, for now: the iid variance
+only (no clustered one), the CPU only, and at least 5 nodes (with fewer,
+holding the nodes during a step biases the fit; one node is not Laplace's
+fit here, which `random_method="laplace"` gives). Nine nodes are within
+1e-5 of the 25-node log-likelihood with groups of about 3 rows; raise
+`random_nodes` if the estimates move when you do. For a binary outcome use
+`logit_stream`, not a two-level `mlogit_stream`.
+
+### The multinomial logit
+
+:::{admonition} Experimental
+:class: warning
+The multinomial logit's adaptive quadrature is checked against brute-force
+integration only (no other library fits it), and warns with
+`logit_stream.ExperimentalWarning`.
+:::
+
+With a multinomial outcome Laplace's bias is larger, and not only
+downward. On simulated data (J = 5, 20,000 firms within 50 absorbed cells,
+firm intercepts with sds 0.8, 0.8, 0.6 and 0.6, correlation 0.3, level E
+about 4% of the rows), the bias in each level's variance over 5
+simulations, with "small" firms of 0 to 10 known workers (10% with none,
+30% with one, mean 3):
+
+| firms | method | B | C | D | E (rare) | mean correlation |
+|---|---|---|---|---|---|---|
+| small (mean 3 rows) | Laplace | -17% | -16% | -23% | +109% | 0.17 |
+| | adaptive | +1% | 0% | -12% | -14% | 0.32 |
+| 0 to 10 rows (mean 5) | Laplace | -13% | -14% | -12% | +43% | 0.22 |
+| | adaptive | -1% | -2% | -6% | 0% | 0.31 |
+| 5 to 10 rows (mean 7.5) | Laplace | -10% | -10% | -8% | +15% | 0.24 |
+| | adaptive | 0% | 0% | -4% | -9% | 0.31 |
+
+The slopes were within 3% under both. The rare level's sd varies by
+about 0.03 across simulations, so its adaptive figures are within noise.
+With 7 points per dimension the estimates agreed with 5 to 0.001; with 3
+they moved back toward Laplace's (the rare level's sd 0.66 to 0.76),
+which is why at least 5 are required.
+
+```python
+fit = mlogit_stream("y ~ x | cell", df, random="firm", random_method="adaptive")
+```
+
+The rule is the product of `random_nodes` points per dimension (default
+5) over the J - 1 intercepts: 625 points per group for J = 5, centred at
+the group's conditional mode and scaled by its conditional covariance.
+Groups of 30 rows or more, whose integrands are close to normal, take 3
+points per dimension (81). The fit took about 1.6 times the Laplace fit's
+time in the simulation above (84 s against 51 s for 60,000 rows). The
+tests check it against brute-force integration for J = 3, with and without
+a fixed effect: the estimates to 3e-3, the coefficients' and $\Sigma$'s
+standard errors to 3%. `draw_parameters` and `draw_ranef` work with it
+(see [Multiple imputation](../imputation/multiple_imputation.md)). See
+`logit_stream.random_effects.adaptive_mnl`.
+
+**Conditional sds.** `ranef()` gives each group's effect (its conditional
+mode) and, in `sd_<grouping>` (`sd_<grouping>:<level>` for the multinomial
+logit, 0 for the base level), its conditional standard deviation: the
+square root of the inverse curvature of the group's log posterior at the
+mode, given the coefficients, the fixed effect and $\Sigma$ (lme4's
+`condVar`). With few rows a group's sd is close to the prior's,
+$\sqrt{\Sigma}$:
+
+```text
+┌──────┬───────────┬──────────┬───────┐
+│ firm ┆ re_firm   ┆ sd_firm  ┆ n_obs │
+╞══════╪═══════════╪══════════╪═══════╡
+│ 0    ┆ -0.32618  ┆ 0.704382 ┆ 2     │
+│ 1    ┆ -0.059486 ┆ 0.68662  ┆ 2     │
+│ 4    ┆ 0.038911  ┆ 0.686187 ┆ 2     │
+└──────┴───────────┴──────────┴───────┘
+```
+
+A normal with that mean and sd is the group effect's approximate posterior,
+e.g. for drawing a group's effect in multiple imputation. With very few
+rows, or rows all in one outcome level, the posterior is skewed and the
+normal is only approximate. The mode and sd do not include the
+coefficients' or $\Sigma$'s uncertainty.
+
+## Random slopes
+
+:::{admonition} Experimental
+:class: warning
+Random slopes are new; their interface may change.
+:::
+
+A covariate's coefficient can vary across groups too: the effect of a
+prior test score on proficiency may differ between schools. With
+`random={"school": ["1", "prior"]}`, each school gets a random intercept
+and a random slope in `prior`, with their covariance estimated. The
+script for this section, `examples/random_slopes.py` (at the end of the
+page), simulates 1,500 schools of about 8 students, whose intercepts and
+slopes have sds 0.8 and 0.5 and correlation 0.3:
+
+```python
+fit = logit_stream("proficient ~ ses + prior | district", students,
+                   random={"school": ["1", "prior"]})
+fit.summary()
+fit.ranef().collect()          # re_school, re_school:prior and their conditional sds
+```
+
+```text
+random intercepts and slopes; adaptive Gauss-Hermite quadrature, 7 nodes
+  by school (1,500 groups, unstructured covariance), sd (se): (Intercept): 0.7999 (0.0363)   prior: 0.3908 (0.0492)
+    correlations: (Intercept)~prior: +0.299 (0.1061)
+┌─────────────┬───────────┬────────────┬────────────┬─────────────┐
+│ Coefficient ┆ Estimate  ┆ Std. Error ┆ t value    ┆ Pr(>|t|)    │
+╞═════════════╪═══════════╪════════════╪════════════╪═════════════╡
+│ ses         ┆ -0.316571 ┆ 0.022859   ┆ -13.848556 ┆ 1.2980e-43  │
+│ prior       ┆ 0.679012  ┆ 0.027811   ┆ 24.415018  ┆ 1.1846e-131 │
+└─────────────┴───────────┴────────────┴────────────┴─────────────┘
+┌────────┬───────────┬─────────────────┬───────────┬─────────────────┬───────┐
+│ school ┆ re_school ┆ re_school:prior ┆ sd_school ┆ sd_school:prior ┆ n_obs │
+╞════════╪═══════════╪═════════════════╪═══════════╪═════════════════╪═══════╡
+│ 0      ┆ 0.636722  ┆ 0.102754        ┆ 0.580942  ┆ 0.358636        ┆ 11    │
+│ 1      ┆ 0.398915  ┆ 0.187354        ┆ 0.553715  ┆ 0.337145        ┆ 9     │
+│ 2      ┆ 0.869282  ┆ -0.017986       ┆ 0.635709  ┆ 0.371832        ┆ 8     │
+│ ...
+```
+
+The slope's sd, 0.39, is 2.2 standard errors below the simulation's 0.5:
+with eight students a school, the slopes are poorly determined, as their
+conditional sds show (about 0.36, nearly the sd itself), and the predicted
+slopes correlate only 0.48 with the true ones. `fit.varcorr()` gives the sds
+and the correlation with their standard errors and confidence intervals.
+
+`"1"` is the intercept; `{"school": "prior"}` gives a slope alone. With
+the ordered logit the effects shift the latent scale, and with the
+multinomial logit each non-base level has its own intercept and slopes,
+all correlated: with J = 3 and one slope, four effects per group. One
+random grouping is supported, optionally within an absorbed fixed effect
+it nests in.
+
+**How it is fitted.** By adaptive Gauss-Hermite quadrature, in as many
+dimensions as each group has effects: `random_nodes` points per dimension
+(by default 9 for one effect, 7 for two, 5 for more), centred at each
+group's mode and scaled by its conditional covariance, as for the
+[multinomial intercepts](#the-multinomial-logit). Laplace's approximation
+is not offered. Slopes are wanted most where groups are small, and there
+it is biased: on simulated binary data with 1,500 groups of about 8 rows
+and a correlated intercept and slope (sds 0.8 and 0.5), lme4's Laplace
+fit put the sds at 0.75 and 0.45, against 0.79 and 0.53 by quadrature.
+With smaller groups (about 4 rows), its were 0.72 and 0.38, against 0.82
+and 0.54. With tiny groups each group's posterior moves with $\Sigma$, so
+the quadrature's rounds (a Newton step with the points held, then the
+points moved) converge slowly; they are accelerated by SQUAREM.
+
+**Cost.** Each round reads the data two or more times, and each read
+evaluates every row at each of its group's points (49 for an intercept
+and a slope); tiny groups need more rounds. On about a million simulated
+rows, with two covariates, an intercept and a slope in one of them, and no
+fixed effect, on an 8-thread laptop:
+
+| model | 20,000 groups of 50 rows | 200,000 groups of 5 |
+|---|---|---|
+| binary | 15 s | 102 s |
+| ordered (4 levels) | 17 s | 139 s |
+| multinomial (J = 3: 625 points per group) | 3 to 4 minutes | over 90 minutes |
+
+Memory stayed near 1 GB in each. The multinomial's four effects per group
+(an intercept and a slope for each of its two non-base levels) make it the
+costliest by far; with tiny groups it is not yet practical at this size.
+
+The tests check the binary logit against R's GLMMadaptive (adaptive
+quadrature with the same model, and with a fixed effect as dummy
+variables): the coefficients agree to 0.01 standard errors and the sds to
+2e-3. The ordered logit and the multinomial's slopes are checked against
+brute-force integration, and the two-level multinomial against the binary
+logit (equal to 1e-6). The script's fit, with 1,500 groups, took 3 seconds.
+
+**Testing the slope.** Against the random intercept alone, the full model
+adds the slope's variance and its covariance with the intercept. The
+variance is on its boundary under the null, so the reference is Stram and
+Lee's 50:50 mixture of chi-squared(1) and chi-squared(2), `boundary=True`:
+
+```python
+intercept_only = logit_stream("proficient ~ ses + prior | district", students,
+                              random="school", random_method="adaptive")
+lr_test(intercept_only, fit, boundary=True)
+```
+
+```text
+{'statistic': 30.85, 'df': 2, 'p': 1.1e-07, 'reference': '0.5 chi2(1) + 0.5 chi2(2)', 'boundary': True, ...}
+```
+
+**Prediction and imputation.** `predict` adds each group's intercept and
+slopes (0 for a group the fit did not see). `effects="average"` averages
+the probabilities over the effects' distribution, each row's being
+normal with variance z'Cz (C the group's conditional covariance, or
+$\Sigma$ for an unseen group). `draw_parameters(n, ranef=True,
+newdata=...)` draws the coefficients, the fixed effect and $\Sigma$, then
+each group's effects given its rows by importance resampling, and an
+unseen group's from N(0, $\Sigma$), for [multiple
+imputation](../imputation/multiple_imputation.md). For school 0 and a
+school the fit did not see, at two values of `prior`:
+
+```text
+┌────────┬───────┬─────────────┬──────────┐
+│ school ┆ prior ┆ conditional ┆ averaged │
+╞════════╪═══════╪═════════════╪══════════╡
+│ 0      ┆ -1.0  ┆ 0.180171    ┆ 0.196064 │
+│ 0      ┆ 1.0   ┆ 0.512084    ┆ 0.510718 │
+│ 99999  ┆ -1.0  ┆ 0.114138    ┆ 0.136655 │
+│ 99999  ┆ 1.0   ┆ 0.333782    ┆ 0.36014  │
+└────────┴───────┴─────────────┴──────────┘
+```
+
+The unseen school's conditional probability uses the mean intercept and
+slope; averaging over their distribution moves it toward one half, since
+the logistic curve is flatter away from its middle.
+
 ## How it is fitted
 
 The likelihood integrates the group effects out. It is approximated by
@@ -193,7 +461,8 @@ their values for the same data); with two, nested or crossed, the
 coefficients are within 0.0005 standard errors of theirs and the standard
 deviations within 1e-5. On simulated data with about 100 rows per group, the
 coefficients were within 0.001 standard errors of the exact
-maximum-likelihood estimates (by quadrature).
+maximum-likelihood estimates (by quadrature). With small groups it is
+biased; see [adaptive quadrature](#small-groups-adaptive-quadrature).
 
 `random_method="joint-mode"` instead holds the coefficients and the effects at
 their joint mode (lme4's `nAGQ = 0`): faster, and close to the Laplace fit
@@ -202,7 +471,7 @@ coefficients can be a few tenths of a standard error away. Here, with 500
 rows per PUMA:
 
 ```text
-joint mode vs Laplace: largest difference 0.183 standard errors; 2.0 s vs 6.9 s
+joint mode vs Laplace: largest difference 0.183 standard errors; 2.5 s vs 9.2 s
 ```
 
 Each step is one read of the data, as with the fixed effect: for a given
@@ -247,8 +516,76 @@ is near zero, where profile-likelihood intervals would be better (not
 computed); at the floor, an sd's interval reaches to infinity, as the
 states' do above. `random_cov="diagonal"` estimates uncorrelated effects.
 
+### Testing a variance
+
+`lr_test(restricted, full)` is the likelihood-ratio test of two nested
+models, fitted to the same rows: 2 (loglik_full - loglik_restricted), on
+the difference in their numbers of parameters (`n_params`, which counts
+$\Sigma$'s). Is there PUMA variation at all? Against the model without the
+random intercepts:
+
+```python
+plain = mlogit_stream(f"race ~ {X}", people, levels=RACES)
+lr_test(plain, re)
+```
+
+```text
+{'statistic': 5413.55, 'df': 15, 'p': 0.0, 'reference': 'chi2(15)', 'boundary': False, ...}
+```
+
+A variance's null value, 0, is on the boundary of its space, so the
+statistic is not chi-squared under the null. For one variance, its null
+distribution is the 50:50 mixture of chi-squared(0), a point mass at 0, and
+chi-squared(1) (Self and Liang 1987). The plain chi-squared p-value is then
+twice too large, which makes the test conservative. `boundary="auto"`, the
+default, uses the mixture when the full model adds exactly one variance (a
+random grouping with a scalar intercept, as in the small-groups example
+above, or one random coefficient of the [mixed logit](mixed.md)):
+
+```python
+lr_test(logit_stream("y ~ 1 | cell", firms), sm)
+```
+
+```text
+{'statistic': 1262.35, 'df': 1, 'p': 8.6e-277, 'reference': '0.5 chi2(0) + 0.5 chi2(1)', 'boundary': True, ...}
+```
+
+Otherwise, as for the multinomial's 15 parameters above, it uses the plain
+chi-squared, as R's `anova` does for lme4's fits. That is conservative when
+variances are on the boundary, whose exact mixture is more complicated.
+`boundary=True` uses Stram and Lee's (1994) 50:50 mixture of
+chi-squared(df - 1) and chi-squared(df), the reference for adding one random
+effect with its covariances with the effects already in the model;
+`boundary=False` always uses the plain chi-squared. In a simulation with no
+group variance (200 data sets of 60 groups of 10), 55% of the statistics
+were 0, and the mixture rejected 8% of the time at the 10% level, against
+3.5% for the plain chi-squared.
+
+The log-likelihood with random intercepts is the fit's approximation of it,
+Laplace's or the adaptive quadrature's, so compare fits that use the same
+method. The test needs the likelihood: `lr_test` refuses ridge-penalized
+and Firth fits, and analytic (sampling) weights, under which the
+log-likelihood is a pseudo-likelihood (use `wald_test` with a robust
+variance there). The tests check the statistics against R's `anova` for
+`glm` and lme4's `glmer`.
+
+## References
+
+- Self, S. G. and K.-Y. Liang (1987). Asymptotic properties of maximum
+  likelihood estimators and likelihood ratio tests under nonstandard
+  conditions. *Journal of the American Statistical Association* 82(398),
+  605--610.
+- Stram, D. O. and J. W. Lee (1994). Variance components testing in the
+  longitudinal mixed effects model. *Biometrics* 50(4), 1171--1177.
+
 :::{dropdown} The full script: `examples/random_intercepts.py`
 ```{literalinclude} ../../examples/random_intercepts.py
+:language: python
+```
+:::
+
+:::{dropdown} The random-slopes script: `examples/random_slopes.py`
+```{literalinclude} ../../examples/random_slopes.py
 :language: python
 ```
 :::

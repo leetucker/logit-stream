@@ -18,6 +18,12 @@ Layout
     fe.py            one absorbed fixed effect (multinomial, ordered)
     multi_fe.py      several, for the multinomial logit (a Poisson regression)
     random_effects/  random intercepts (Laplace's approximation)
+    alt_fe.py        the conditional logit's absorbed alternative constants
+    alt_slopes.py    its random slopes by region (experimental)
+    calibrate.py     constants solved from known totals; streaming by group
+    assign.py        constrained assignment to known totals (experimental)
+    mi.py            multiple imputation: outcome draws, pooling by Rubin's rules
+    lrtest.py        the likelihood-ratio test of nested models
     optimize.py      Newton and quasi-Newton steps from an analytic gradient,
                      for the likelihoods that are not concave
     _choice.py       what the mixed and nested logit's fits share
@@ -33,6 +39,7 @@ from __future__ import annotations
 from hdfe_stream.core.multcomp import bonferroni, holm
 from hdfe_stream.core.reporting import etable
 
+from ._experimental import ExperimentalWarning
 from .api import (
     cfelogit_stream,
     clogit_stream,
@@ -44,6 +51,8 @@ from .api import (
     oprobit_stream,
     probit_stream,
 )
+from .lrtest import lr_test
+from .mi import PooledEstimate, pool, pool_matrix
 from .results import (
     BinaryLogitResult,
     BinaryProbitResult,
@@ -64,7 +73,7 @@ def _version():
         from importlib.metadata import version
         return version("logit-stream")
     except Exception:                   # noqa: BLE001 -- not installed
-        return "0.4.0"
+        return "0.5.0"
 
 
 __version__ = _version()
@@ -76,5 +85,6 @@ __all__ = [
     "OrderedLogitResult", "OrderedProbitResult",
     "ConditionalLogitResult", "ConditionalFELogitResult",
     "MixedLogitResult", "NestedLogitResult",
-    "LogitMulti", "etable", "bonferroni", "holm", "__version__",
+    "LogitMulti", "ExperimentalWarning", "pool", "pool_matrix", "PooledEstimate", "lr_test",
+    "etable", "bonferroni", "holm", "__version__",
 ]

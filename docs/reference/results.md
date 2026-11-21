@@ -29,6 +29,7 @@ model, as with several fixed effects
    .. automethod:: fixef
    .. automethod:: ranef
    .. automethod:: varcorr
+   .. automethod:: draw_parameters
    .. automethod:: sample
    .. automethod:: to_pyfixest
 
@@ -39,6 +40,10 @@ model, as with several fixed effects
    .. automethod:: predict
    .. automethod:: resid
    .. automethod:: fixef
+   .. automethod:: ranef
+   .. automethod:: varcorr
+   .. automethod:: draw_parameters
+   .. automethod:: draw_ranef
    .. automethod:: sample
    .. automethod:: to_pyfixest
 
@@ -54,6 +59,8 @@ model, as with several fixed effects
    .. automethod:: fixef
    .. automethod:: ranef
    .. automethod:: varcorr
+   .. automethod:: draw_parameters
+   .. automethod:: draw_ranef
    .. automethod:: sample
 
 .. autoclass:: OrderedProbitResult
@@ -65,6 +72,7 @@ model, as with several fixed effects
    .. automethod:: predict
    .. automethod:: resid
    .. automethod:: sample
+   .. automethod:: sample_assignments
 
 .. autoclass:: ConditionalFELogitResult
    :no-members:

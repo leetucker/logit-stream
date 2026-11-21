@@ -32,9 +32,9 @@ fit.tidy()
 │ owner       ┆ 0.281224  ┆ 0.011119   ┆ 25.291536  ┆ 3.9581e-141 │
 │ urban       ┆ 0.265801  ┆ 0.008153   ┆ 32.603152  ┆ 3.7004e-233 │
 │ cut1        ┆ 6.756594  ┆ 0.052894   ┆ 127.73735  ┆ 0.0         │
-│ cut2        ┆ 8.192264  ┆ 0.053519   ┆ 153.071066 ┆ 0.0         │
+│ cut2        ┆ 8.192264  ┆ 0.053519   ┆ 153.071065 ┆ 0.0         │
 │ cut3        ┆ 9.237465  ┆ 0.054303   ┆ 170.108772 ┆ 0.0         │
-│ cut4        ┆ 10.483533 ┆ 0.055288   ┆ 189.617347 ┆ 0.0         │
+│ cut4        ┆ 10.483533 ┆ 0.055288   ┆ 189.617346 ┆ 0.0         │
 └─────────────┴───────────┴────────────┴────────────┴─────────────┘
 ```
 
@@ -105,7 +105,7 @@ $(a(1-a) - b(1-b)) / (b - a) = a + b - 1$ too. For the ordered probit they
 differ (the generalized residual is unbounded); the script checks both:
 
 ```text
-logit: largest |resid_prob - resid_gen| 7.88e-15
+logit: largest |resid_prob - resid_gen| 6.44e-15
 probit: largest |resid_prob - resid_gen| 2.15e+00
 ```
 

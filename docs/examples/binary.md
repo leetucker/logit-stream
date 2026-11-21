@@ -40,9 +40,9 @@ probit = probit_stream(f"hispanic ~ {X} | puma", people, vcov={"CRV1": "puma"})
 │ coefficient ┆ logit     ┆ probit    ┆ ratio    │
 ╞═════════════╪═══════════╪═══════════╪══════════╡
 │ age10       ┆ -0.203589 ┆ -0.112242 ┆ 1.813834 │
-│ female      ┆ -0.004303 ┆ -0.0013   ┆ 3.311033 │
-│ log_income  ┆ -0.307143 ┆ -0.171274 ┆ 1.79328  │
-│ owner       ┆ -0.2886   ┆ -0.151423 ┆ 1.905916 │
+│ female      ┆ -0.004303 ┆ -0.0013   ┆ 3.310969 │
+│ log_income  ┆ -0.307143 ┆ -0.171274 ┆ 1.793281 │
+│ owner       ┆ -0.2886   ┆ -0.151423 ┆ 1.905917 │
 │ urban       ┆ 0.507099  ┆ 0.28051   ┆ 1.807777 │
 └─────────────┴───────────┴───────────┴──────────┘
 log-likelihood: logit -83303.8, probit -83326.9
@@ -118,7 +118,7 @@ firth = mlogit_stream("hispanic ~ age10 + log_income + rare", small, levels=[0, 
 ```
 
 ```text
-UserWarning: hispanic ~ age10 + log_income + rare: very large coefficients and standard
+UserWarning: hispanic ~ 1 + age10 + log_income + rare: very large coefficients and standard
 errors on ['1:rare']: the outcome is probably (quasi-)separated by these covariates, ...
 ┌──────────────┬───────────┬──────────────┬───────────┬──────────┐
 │ coefficient  ┆ ML        ┆ ML se        ┆ Firth     ┆ Firth se │

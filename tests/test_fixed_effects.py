@@ -45,14 +45,15 @@ def test_ordered_fe_equals_dummies(fe_data, vcov):
 def test_fixef_table(fe_data):
     a = mlogit_stream("y ~ x1 + x2 | g", fe_data, verbose=False, tol=1e-14)
     t = a.fixef("g").collect()
-    assert t.columns == ["g", "fe_g:0", "fe_g:1", "fe_g:2", "fe_g:3", "n_obs"]
+    assert t.columns == ["g", "fe_g:0", "fe_g:1", "fe_g:2", "fe_g:3", "se_g:0", "se_g:1",
+                         "se_g:2", "se_g:3", "n_obs"]
     assert t.height == 40 and t["n_obs"].sum() == fe_data.height
-    assert (t["fe_g:0"] == 0).all()
+    assert (t["fe_g:0"] == 0).all() and t["se_g:0"].is_null().all()   # the reference
     assert a.fixef().collect().equals(t)
     with pytest.raises(KeyError):
         a.fixef("h")
     o = ologit_stream("yo ~ x1 + x2 | g", fe_data, verbose=False)
-    assert o.fixef("g").collect().columns == ["g", "fe_g", "n_obs"]
+    assert o.fixef("g").collect().columns == ["g", "fe_g", "se_g", "n_obs"]
     assert a.fe_names == ["g"] and a.n_levels == {"g": 40}
 
 

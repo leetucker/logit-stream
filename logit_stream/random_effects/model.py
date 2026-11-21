@@ -619,6 +619,8 @@ class _RandomEffects(_SigmaMixin):
         return self._full(H).R
 
     def vcov_beta(self, H):
+        if getattr(self, "adaptive_V", None) is not None:      # set by the adaptive fit
+            return self.adaptive_V
         return _Driver.inverse(self.reduced(H))
 
     def sandwich(self, H, M):
@@ -735,18 +737,71 @@ class _RandomEffects(_SigmaMixin):
         return [self.unit_key] if self.kind == "tree" else list(self.cell_cols)
 
     # ------------------------------------------------------------ results
+    def conditional_sd(self, theta):
+        """Each random grouping's effects' conditional standard deviations,
+        (G, m) per grouping: the square roots of the diagonal of the
+        effects' covariance given the data, the coefficients, the fixed
+        effect and Sigma -- the blocks of the inverse of the effects' own
+        information plus Sigma^-1 at the estimates (lme4's ``condVar``),
+        0 for a level that is not free (the multinomial's base). They
+        need the last read at `theta` (the fit's final one); otherwise NaN.
+        `sd_override`, set by the adaptive quadrature, takes precedence."""
+        if getattr(self, "sd_override", None) is not None:
+            return self.sd_override
+        D = self._cache
+        if D is None or not np.array_equal(D.theta, theta):
+            return [np.full((f.G, self.m), np.nan) for f in self.random]
+        _, F = self._random_factor(D.Haa, D.ga, D, [f.Lam for f in self.random])
+        own = self._cov(F)[0]
+        out = []
+        for f, C in zip(self.random, own):
+            v = np.clip(np.diagonal(C, axis1=1, axis2=2), 0.0, None)
+            out.append(np.where(f.free, np.sqrt(v), 0.0))
+        return out
+
+    def conditional_cov(self, theta):
+        """Each random grouping's effects' covariance given the data, the
+        coefficients, the fixed effect and Sigma, (G, m, m) per grouping (0
+        for a level that is not free): the full blocks whose diagonal
+        `conditional_sd` reports. The adaptive quadrature's own, where it
+        set them (`cov_override`, or `sd_override` for a scalar effect)."""
+        if getattr(self, "cov_override", None) is not None:
+            return self.cov_override
+        if getattr(self, "sd_override", None) is not None:
+            return [(s * s)[:, :, None] if s.shape[1] == 1
+                    else np.einsum("gi,ij->gij", s * s, np.eye(s.shape[1]))
+                    for s in self.sd_override]
+        D = self._cache
+        if D is None or not np.array_equal(D.theta, theta):
+            return [np.full((f.G, self.m, self.m), np.nan) for f in self.random]
+        _, F = self._random_factor(D.Haa, D.ga, D, [f.Lam for f in self.random])
+        own = self._cov(F)[0]
+        out = []
+        for f, C in zip(self.random, own):
+            free = f.free[:, :, None] & f.free[:, None, :]
+            out.append(np.where(free, C, 0.0))
+        return out
+
     def result_spec(self, theta):
         """Each random grouping's predicted effects (`ranef`), the fixed
         effect's (`fixef`), and how `predict` combines them."""
         levels = self.p0.levels
         mlogit = self.model.kind == "mlogit"
-        out = {"ranef": {}, "effects": []}
-        for f in self.random:
+        out = {"ranef": {}, "effects": [], "ranef_cov": {}}
+        sds = self.conditional_sd(theta)
+        covs = self.conditional_cov(theta)
+        for f, sd, C in zip(self.random, sds, covs):
+            # (each kept group's conditional covariance, in the table's rows, for
+            # predict(effects="average"))
+            out["ranef_cov"][f.name] = np.ascontiguousarray(C[f.keep])
             A = self._theta_of(theta, f)
             vals = ({f"re_{f.name}:{lv}": pl.Series(A[:, j]) for j, lv in enumerate(levels)}
                     if mlogit else {f"re_{f.name}": pl.Series(A[:, 0])})
+            # (not in `effects`: predict adds only the effects themselves)
+            sdv = ({f"sd_{f.name}:{lv}": pl.Series(sd[:, j]) for j, lv in enumerate(levels)}
+                   if mlogit else {f"sd_{f.name}": pl.Series(sd[:, 0])})
             n = pl.Series(f.ncnt.sum(axis=1).astype(np.int64))
-            table = self.p0.fe_tables[f.name].with_columns(**vals, n_obs=n)
+            table = self.p0.fe_tables[f.name].with_columns(**vals, **sdv, n_obs=n)
             out["ranef"][f.name] = table.filter(pl.Series(f.keep)).drop(CODE)
             out["effects"].append((f.name, list(vals), "random"))
         fe = self.fixed_factor

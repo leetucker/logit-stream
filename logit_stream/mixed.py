@@ -1,4 +1,4 @@
-"""Mixed logit by maximum simulated likelihood, streamed (prototype).
+"""Mixed logit by maximum simulated likelihood, streamed (experimental).
 
 The model is McFadden's conditional logit with some coefficients random
 across choosers: for chooser (panel) n, with choice situations t and
@@ -415,6 +415,14 @@ def _fit_mixed(fml, data, *, case, panel=None, random, draws=500, halton=True, s
     if int(draws) < 1:
         raise ValueError("draws must be at least 1")
     device = resolve(device)
+    from ._experimental import experimental
+    experimental("the mixed logit (mixlogit_stream)", "a prototype: no predict or resid, "
+                 "uncorrelated coefficients only")
+    if device is not None:
+        experimental('device="cuda"', "the passes on a GPU have not been optimized for one")
+    if polars_engine == "gpu":
+        experimental('polars_engine="gpu"', "Polars' GPU engine for the passes over the source "
+                     "has not been tuned here")
     case = [case] if isinstance(case, str) else list(case)
     own_panel = panel is not None
     panel = case if panel is None else ([panel] if isinstance(panel, str) else list(panel))

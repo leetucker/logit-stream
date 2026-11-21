@@ -11,6 +11,7 @@ python benchmarks/mixed_benchmark.py check   # mixed logit: accuracy against the
 python benchmarks/mixed_benchmark.py    # mixed logit: 752 to 1M respondents
 python benchmarks/panel_benchmark.py    # conditional, fixed-effects and bias-corrected logit for panels
 python benchmarks/gpu_benchmark.py      # CPU against GPU (needs an NVIDIA GPU and CuPy)
+python benchmarks/known_totals_offset.py   # a proxy for the alternatives' constants against estimating them
 python benchmarks/plot_benchmarks.py    # docs/figures/*.svg from results/*.csv
 python benchmarks/make_tables.py        # the tables in docs/benchmarks/*.md from results/*.csv
 ```
@@ -22,6 +23,7 @@ python benchmarks/make_tables.py        # the tables in docs/benchmarks/*.md fro
 | `mixed_benchmark.py` | mixed logit, a normal coefficient, panels of nine choices, 500 draws | xlogit, jaxlogit, Biogeme; R: logitr; and the exact likelihood (`check`) |
 | `panel_benchmark.py` | Chamberlain's conditional logit; the fixed-effects logit; its bias correction | statsmodels' ConditionalLogit, R's survival clogit; R's fixest and pyfixest; R's alpaca |
 | `gpu_benchmark.py` | every model, on one machine's CPU and GPU | xlogit and jaxlogit on both, for the conditional and mixed logit |
+| `known_totals_offset.py` | conditional logit with a log-share offset, against absorbed constants calibrated to known totals (the table in the docs' *Choices with known totals*) | the simulation's true values |
 
 Each configuration runs in its own subprocess (`_harness.py`), which reports
 wall time (reading the data plus fitting), peak resident memory (`VmHWM`) and

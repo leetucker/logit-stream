@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.5.0
+
+Highlights: random slopes, adaptive quadrature for small groups, and tools for imputation
+(parameter and group-effect draws, outcome draws, Rubin's rules, and choices calibrated to known
+totals). Details are in the documentation.
+
+Mixed models
+- **Random slopes** (experimental) for the binary, ordered and multinomial logit:
+  `random={"school": ["1", "prior"]}`, one grouping, optionally within an absorbed fixed effect,
+  with the intercept and slopes correlated. Fitted by adaptive Gauss-Hermite quadrature with
+  SQUAREM acceleration; checked against R's GLMMadaptive. The binary and ordered fits run in a
+  parallel numba kernel: on about a million rows, 15 s with groups of 50 and 102 s with groups of
+  5. `ranef()`, `varcorr()`, `predict`, and both kinds of draws below work with them.
+- **`random_method="adaptive"`: adaptive Gauss-Hermite quadrature for random intercepts**
+  (`logit_stream`, `ologit_stream`, and, experimental, `mlogit_stream`), as lme4's `nAGQ > 1`.
+  It removes the Laplace approximation's bias with small groups: with about 3 rows per group and
+  variance 0.64, Laplace estimated 0.494 and adaptive quadrature 0.644. Checked against lme4,
+  ordinal and brute-force maximum likelihood. For the binary and ordered logit it is faster than
+  the Laplace fit; for the multinomial logit it takes about 1.6 times as long at J = 5.
+- **`logit_stream(random=...)`**: random intercepts for the binary logit (Laplace by default).
+  Before, `random=` reached `feglm_stream` and failed.
+- **`lr_test(restricted, full)`**: likelihood-ratio tests of nested models, with the chi-squared
+  mixture when the full model adds a variance on its boundary. Checked against R's `anova`.
+- `ranef()` reports each group's conditional sd (lme4's `condVar`), and
+  `predict(effects="average")` (experimental) averages the probabilities over each group's effect
+  distribution instead of evaluating them at its mode.
+
+Imputation
+- **`draw_parameters(n, seed)`**: draws from the parameters' estimated sampling distribution
+  (coefficients, one absorbed fixed effect's levels, and an adaptive fit's variance), each a
+  result whose `predict` uses the draw. `fixef()` now has standard errors wherever this is
+  available.
+- **`draw_ranef()` and `draw_parameters(..., ranef=True)`** (experimental): exact draws of each
+  group's random intercept from its conditional distribution; groups not in the fit draw from
+  the prior. All n draws come from one read of the data.
+- **`predict(type="draw", seed=m)`**: draws of the outcome, reproducible from the seed and each
+  row's identifier regardless of batching or row order.
+- **`pool` and `pool_matrix`**: Rubin's rules for scalar and vector estimates, with Barnard and
+  Rubin's degrees of freedom and the D1 joint Wald test. Checked against R's mice and mitml.
+- **`predict(..., calibrate={"estab": totals})`** for the conditional logit: solves one
+  dimension's alternative constants so that predicted choices match known totals. Streamed in
+  batches of linked groups, so memory is bounded by the largest group.
+- **Constrained assignment** (experimental): `logit_stream.assign` and
+  `sample_assignments(newdata, {"estab": totals}, sampler=...)` draw alternatives so their counts
+  match known totals exactly (`SwapMCMC`, `ExactSmall`), approximately (`GaussianPenalty`), or in
+  expectation (`Balanced`, the cube method).
+
+Conditional logit
+- **Absorbed alternative constants** in `clogit_stream` (`"chosen ~ x | estab"`, one or more
+  dimensions). `fe_solver="auto"` picks exact block Newton steps or a contraction; both agree with
+  the dummy-coded fit and with pyfixest's `fepois`. Robust and clustered variances work with
+  either.
+- **Random slopes by region** (experimental): `random={"cz": "dist"}` gives each region its own
+  deviation in those coefficients, by the exact Laplace approximation, with absorbed constants
+  allowed. Works with `predict`, `calibrate=`, `sample_assignments`, `draw_parameters` and
+  `lr_test`.
+
+Changed
+- Random intercepts (Laplace, joint mode, and the binary and ordered adaptive
+  fits) and the nested logit are no longer marked as experimental.
+  `own_covariates=` is checked against R's mlogit.
+- Every experimental feature now issues `logit_stream.ExperimentalWarning` (a subclass of
+  hdfe-stream's), attributed to the caller's line.
+- `random_nodes` defaults to each method's own value.
+
+Fixed
+- Multinomial logit group-intercept draws used the wrong linear predictors when the model had an
+  intercept and no absorbed fixed effect.
+- Binary logit parameter draws with an adaptive random intercept and no fixed effect put the
+  coefficients in the wrong order, so each draw's `predict` was wrong.
+- Draws for groups only in `newdata` came in an order that varied between runs, so the same seed
+  gave different imputations.
+- `sample_assignments` depended on the row order of the totals frame.
+
+Documentation
+- A new **Imputation** section: predicting at scale, combining with other sources, multiple
+  imputation (`examples/multiple_imputation.py`), and choices with known totals
+  (`examples/constrained_assignment.py`).
+- Random-slopes examples (`examples/random_slopes.py`, `examples/regional_slopes.py`), and a
+  section on Laplace's small-group bias and the adaptive quadrature.
+
 ## 0.4.0
 
 New

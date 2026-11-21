@@ -27,3 +27,5 @@ needs afterwards.
 | [`random_intercepts.py`](random_intercepts.py) | Random intercepts: the covariance, shrinkage, unseen groups, nested groupings, within a fixed effect, the ordered logit's. About a minute. |
 | [`incidental_parameters.py`](incidental_parameters.py) | The fixed-effects logit's bias in short panels, the analytic bias correction, Chamberlain's conditional logit, correlated random effects, and the ordered logit's blow-up-and-cluster estimator. |
 | [`imputation.py`](imputation.py) | Predicting race for a million records from a survey, fixed against random effects, and combining the predictions with another source of information by Bayes' rule. |
+| [`multiple_imputation.py`](multiple_imputation.py) | Multiple imputation of a binary characteristic of students in schools: drawing the parameters and each school's intercept, then the values. |
+| [`constrained_assignment.py`](constrained_assignment.py) | Imputing workers' establishments so that the establishments' counts match known totals: calibrated probabilities, and exact, soft and balanced constrained draws (experimental). About a minute. |

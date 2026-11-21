@@ -502,6 +502,12 @@ def _fit_nested(fml, data, *, case, alt, nests, vcov="iid", cluster=(), weights=
     if offset is not None:
         offset = (pl.col(offset) if isinstance(offset, str) else offset).cast(pl.Float64)
     device = resolve(device)
+    from ._experimental import experimental
+    if device is not None:
+        experimental('device="cuda"', "the passes on a GPU have not been optimized for one")
+    if polars_engine == "gpu":
+        experimental('polars_engine="gpu"', "Polars' GPU engine for the passes over the source "
+                     "has not been tuned here")
 
     def log(msg):
         _log(verbose, msg, logger, log_level)

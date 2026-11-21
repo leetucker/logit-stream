@@ -31,7 +31,18 @@ from ._frontend import _plan
 from ._limits import limited
 from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
 from .newton import _Driver
-from .random_effects import _fit_random, _RandomEffects, _refine_laplace, _sigma_inference
+from .random_effects import (
+    ADAPTIVE_NODES,
+    MIN_NODES,
+    MNL_MIN_NODES,
+    MNL_NODES,
+    _fit_adaptive,
+    _fit_adaptive_mnl,
+    _fit_random,
+    _RandomEffects,
+    _refine_laplace,
+    _sigma_inference,
+)
 from .results import (
     BinaryLogitResult,
     BinaryProbitResult,
@@ -80,18 +91,22 @@ def _nested_in_cluster(p0, fe, col):
     return bool(np.all(lo[seen] == hi[seen]))
 
 
-def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req):
+def _binary_report(names, beta, all_vcovs, N, P, k_fe, nested_by_req, scale=True):
     """The binary logit's report from the two-level ordered fit's: the
     variances scaled as hdfe-stream's and pyfixest's are, K = P + k_fe
     (iid (N - 1) / (N - K), hetero N / (N - K), clustered times
     (N - 1) / (N - Kc), Kc counting the fixed effect only if it is not nested
     in the request's clusters), and the cutpoint as the intercept (minus it,
-    first)."""
+    first). Without `scale` (random intercepts: maximum-likelihood
+    variances, as lme4's), the variances are not scaled."""
     K = P + k_fe
     fac = {"iid": _ratio(N - 1, N - K), "hetero": _ratio(N - 1, N - K)}
     out = {}
     for key, (V, df) in all_vcovs.items():
-        if key in fac:
+        if not scale:
+            fac[key] = 1.0
+            out[key] = (V, df)
+        elif key in fac:
             out[key] = (V * fac[key], int(N - K))
         else:
             Kc = P + (1 if nested_by_req.get(key) else k_fe)
@@ -163,7 +178,8 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
          block_mb: float = 64.0, chunk_mb: float = 64.0, polars_engine: str = "cpu",
          keep_intermediates: bool = False, verbose: bool = True, logger=None,
          log_level=None, random: str | None = None, random_cov: str = "unstructured",
-         random_tol: float = 1e-6, random_method: str = "laplace", firth: bool = False,
+         random_tol: float = 1e-6, random_method: str = "laplace",
+         random_nodes: int | None = None, firth: bool = False, fe_solver: str = "auto",
          offset=None, start=None, device: str = "cpu", link: str = "logit",
          altwise: bool = False, poisson_options: dict | None = None,
          profile: bool = False, n_threads: int | None = None,
@@ -191,6 +207,12 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                          "terms are the logistic's)")
     from .device import resolve
     device = resolve(device)                # fails now, without CuPy or a GPU
+    from ._experimental import experimental
+    if device is not None:
+        experimental('device="cuda"', "the passes on a GPU have not been optimized for one")
+    if polars_engine == "gpu":
+        experimental('polars_engine="gpu"', "Polars' GPU engine for the passes over the source "
+                     "has not been tuned here")
     if offset is not None:
         if kind == "mlogit":
             raise ValueError("offset= is for the ordered and conditional logit: the multinomial "
@@ -222,6 +244,53 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
         raise ValueError("case= is for clogit_stream")
     if altwise and kind != "clogit":
         raise ValueError("altwise= is for clogit_stream")
+    slopes = None
+    if random is not None and kind == "clogit":
+        # random slopes by region: {grouping: covariate(s)}
+        if (not isinstance(random, dict) or len(random) != 1
+                or not all(isinstance(k, str) for k in random)):
+            raise ValueError("random= for clogit_stream is {grouping: covariate or list of "
+                             "covariates}: random slopes by one grouping, e.g. "
+                             "random={'cz': 'dist'}")
+        (region, zs), = random.items()
+        zs = [zs] if isinstance(zs, str) else list(zs)
+        if not zs or len(set(zs)) < len(zs) or not all(isinstance(z, str) for z in zs):
+            raise ValueError("random= for clogit_stream: the slopes are distinct covariates")
+        if random_method != "laplace":
+            raise ValueError("random slopes are fitted by Laplace's approximation "
+                             "(random_method='laplace')")
+        if l2 or firth:
+            raise ValueError("l2= and firth= cannot be combined with random slopes")
+        if device not in (None, "cpu"):
+            raise ValueError("random slopes run on the CPU (device='cpu')")
+        slopes = (region, zs)
+        random = None
+        experimental("random slopes in the conditional logit (random={grouping: covariates})",
+                     "checked against exact likelihoods and an independent Laplace "
+                     "implementation only")
+    slope_terms = None
+    if isinstance(random, dict) and kind in ("mlogit", "ologit"):
+        # random slopes: {grouping: ["1", "x", ...]} ("1": the intercept)
+        if len(random) != 1 or not all(isinstance(k, str) for k in random):
+            raise ValueError("random= with slopes is {grouping: terms}, for one grouping, e.g. "
+                             "random={'school': ['1', 'prior']} ('1': the intercept)")
+        (grp, terms), = random.items()
+        terms = [terms] if isinstance(terms, str) else list(terms)
+        if not terms or len(set(terms)) < len(terms) or not all(isinstance(t, str)
+                                                                  for t in terms):
+            raise ValueError("random= with slopes: the terms are distinct strings, '1' for the "
+                             "intercept and covariate names")
+        random = grp
+        if terms != ["1"]:
+            slope_terms = terms
+            if random_method == "joint-mode":
+                raise ValueError("random slopes are fitted by adaptive quadrature "
+                                 "(random_method='adaptive')")
+            random_method = "adaptive"
+            experimental("random slopes (random={grouping: [terms]})",
+                         "the binary logit's checked against GLMMadaptive, the ordered and "
+                         "multinomial logit's against brute-force integration only; one "
+                         "grouping")
     if random is not None:
         if kind not in ("mlogit", "ologit"):
             raise ValueError("random= (random intercepts) is for mlogit_stream and ologit_stream")
@@ -232,8 +301,29 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                              "distinct ones")
         if random_cov not in ("unstructured", "diagonal"):
             raise ValueError("random_cov must be 'unstructured' or 'diagonal'")
-        if random_method not in ("laplace", "joint-mode"):
-            raise ValueError("random_method must be 'laplace' or 'joint-mode'")
+        if random_method not in ("laplace", "joint-mode", "adaptive"):
+            raise ValueError("random_method must be 'laplace', 'joint-mode' or 'adaptive'")
+        if random_nodes is None and slope_terms is None:
+            random_nodes = MNL_NODES if kind == "mlogit" else ADAPTIVE_NODES
+        if random_method == "adaptive" and kind == "mlogit" and slope_terms is None:
+            experimental("the multinomial logit's adaptive quadrature (random_method="
+                         "'adaptive')", "checked against brute-force integration only")
+        if random_method == "adaptive":
+            if len(random) != 1:
+                raise ValueError("random_method='adaptive' takes one random grouping")
+            if device not in (None, "cpu"):
+                raise ValueError("random_method='adaptive' runs on the CPU (device='cpu')")
+            if profile:
+                raise ValueError("profile= is not available with random_method='adaptive'")
+            if random_nodes is not None and (
+                    isinstance(random_nodes, bool) or not isinstance(random_nodes,
+                                                                     (int, np.integer))
+                    or random_nodes < (MNL_MIN_NODES if kind == "mlogit" else MIN_NODES)):
+                raise ValueError(f"random_nodes must be an integer of at least "
+                                 f"{MNL_MIN_NODES if kind == 'mlogit' else MIN_NODES} (with "
+                                 "fewer, the nodes held during each Newton step bias the "
+                                 "fit; for Laplace's approximation use "
+                                 "random_method='laplace')")
         if l2:
             raise ValueError("l2= and random= cannot be combined")
     vkey, clusters, hetero, requests = _clusterings(vcov, cluster)
@@ -276,13 +366,18 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                  "effect")
             # the groupings' codes are the store's fe, fe2, ... in this order
             spec = replace(spec, fe=[*random, *spec.fe])
+        elif slopes is not None:
+            if slopes[0] in spec.fe:
+                raise ValueError(f"{spec.fml}: {slopes[0]!r} cannot be both absorbed and the "
+                                 "random slopes' grouping")
+            # the region's codes follow the constants' in the store
+            spec = replace(spec, fe=[*spec.fe, slopes[0]])
         elif spec.fe:
             if _binary and len(spec.fe) > 1:
                 raise _NeedsHdfe
-            if kind == "clogit":
-                raise ValueError(f"{spec.fml}: fixed effects are not available for the "
-                                 "conditional logit (a characteristic of the choice set "
-                                 "cancels; interact it with the alternatives instead)")
+            if kind == "clogit" and (firth or l2):
+                raise ValueError(f"{spec.fml}: firth= and l2= are not available with absorbed "
+                                 "alternative constants")
             if firth and spec.fe:
                 raise ValueError(f"{spec.fml}: firth= is not available with an absorbed "
                                  "fixed effect")
@@ -313,7 +408,7 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                     keep_intermediates=keep_intermediates, log=log, logger=logger,
                     options=opts))
                 continue
-            if len(spec.fe) > 1:
+            if len(spec.fe) > 1 and kind != "clogit":
                 raise ValueError(f"{spec.fml}: one absorbed fixed effect is available for "
                                  f"{_KINDS[kind]} (got {list(spec.fe)}); put small "
                                  "dimensions in as C(var)")
@@ -334,9 +429,11 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
                                 keep_intermediates=keep_intermediates, log=log,
                                 logger=logger, random=random, random_cov=random_cov,
                                 random_tol=random_tol, random_method=random_method,
+                                random_nodes=random_nodes, fe_solver=fe_solver,
                                 firth=firth, offset=offset, start=start, device=device,
                                 link=link, altwise=altwise, budget=budget,
-                                own_covariates=own_covariates, binary=_binary))
+                                own_covariates=own_covariates, binary=_binary,
+                                slopes=slopes, slope_terms=slope_terms))
     if profile:
         from .profile import combine_profiles
         return combine_profiles(results)
@@ -346,9 +443,10 @@ def _fit(kind: str, fml: str, data: Any, *, workdir=None, vcov="iid",
 def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weights, weights_type,
              levels, case, tol, maxiter, l2, storage, dtype, block_mb, chunk_mb, workdir,
              keep_intermediates, log, logger, random=None, random_cov="unstructured",
-             random_tol=1e-6, random_method="laplace", firth=False, offset=None, start=None,
+             random_tol=1e-6, random_method="laplace", random_nodes=None, fe_solver="auto",
+             firth=False, offset=None, start=None,
              device=None, link="logit", altwise=False, budget=None, own_covariates=None,
-             binary=False):
+             binary=False, slopes=None, slope_terms=None):
     t0 = time.time()
     log(f"{_KINDS[kind]}: {spec.fml}")
     run = Run(_base_dir(workdir), auto_cleanup=not keep_intermediates)
@@ -357,12 +455,19 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         p0 = _build(lf, spec, kind, run.path, engine, weights=weights,
                     clusters=clusters, case=case, levels=levels,
                     in_memory=(storage == "memory"),
-                    sort_fe=(SORT_FE and kind in ("mlogit", "ologit") and random is None
+                    sort_fe=(random[0] if random is not None
+                             and random_method == "adaptive"
+                             else SORT_FE and kind in ("mlogit", "ologit") and random is None
                              and len(spec.fe) == 1 and device is None),
                     dtype=np.float32 if dtype == "float32" else np.float64,
                     block_mb=block_mb, log=log, offset=offset, weights_type=weights_type,
                     altwise=altwise, budget=budget)
         disk_peak = p0.store.bytes if storage == "disk" else 0
+        if random is not None and random_method == "adaptive" and not p0.fe_sorted:
+            raise ValueError(
+                f"{spec.fml}: random_method='adaptive' needs each group's rows in one block of "
+                "the store, and they could not be grouped (a group larger than a block, or too "
+                "little memory to sort them; see the log): raise block_mb or max_memory_gb")
         if binary:
             try:
                 ok = [float(v) for v in p0.levels] == [0.0, 1.0]
@@ -405,6 +510,20 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                         f"{spec.fml}: with random intercepts, a clustering must contain whole "
                         f"groups of the coarsest random grouping ({fe.random[-1].name}), and "
                         f"crossed groupings allow none; {bad} do not")
+        elif slopes is not None:
+            from .alt_slopes import _AltSlopes
+            if hetero:
+                raise ValueError(f"{spec.fml}: with random slopes the heteroskedasticity-robust "
+                                 "variance is not available (a region's choice sets share its "
+                                 "slopes); cluster by a variable that contains whole regions")
+            alt = list(spec.fe[:-1])
+            keys = ["fe" if i == 0 else f"fe{i + 1}" for i in range(len(spec.fe))]
+            fe = _AltSlopes(model, p0, alt, slopes[0], keys[:-1], keys[-1], slopes[1],
+                            log=log, logger=logger, budget=budget, solver=fe_solver)
+        elif spec.fe and kind == "clogit":
+            from .alt_fe import _AlternativeFE
+            fe = _AlternativeFE(model, p0, spec.fe, log=log, logger=logger, budget=budget,
+                                solver=fe_solver)
         elif spec.fe:
             from .fe import _AbsorbedFE
             fe = _AbsorbedFE(model, p0, spec.fe[0], log=log, logger=logger, budget=budget)
@@ -418,7 +537,13 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         if random is not None:
             # the joint-mode fit only starts the exact approximation's, which
             # carries Sigma on to random_tol
-            tol_a = max(random_tol, 1e-5) if random_method == "laplace" else random_tol
+            tol_a = (max(random_tol, 1e-5) if random_method == "laplace"
+                     else max(random_tol, 1e-4) if random_method == "adaptive"
+                     else random_tol)
+            if random_method == "adaptive" and (clusters or hetero):
+                raise ValueError(f"{spec.fml}: random_method={random_method!r} has the iid "
+                                 "variance "
+                                 "only (no clustered or heteroskedasticity-robust one yet)")
             fit, re_info = _fit_random(driver, fe, theta0, spec.fml, tol_a, log, logger)
             if random_method == "laplace":
                 fit, info = _refine_laplace(driver, fe, fit, spec.fml, tol, random_tol, log,
@@ -428,7 +553,18 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                 re_info["passes"] += info["laplace_passes"]
                 re_info["newton_steps"] += info["laplace_steps"]
                 re_info["seconds"] = round(re_info["seconds"] + info["laplace_seconds"], 3)
-            re_info["sigma"] = _sigma_inference(driver, fe, fit)
+            if random_method == "adaptive" and slope_terms is not None:
+                from .random_effects.slopes import _fit_slopes, default_nodes
+                q = (len(p0.levels) - 1 if kind == "mlogit" else 1) * len(slope_terms)
+                nodes = random_nodes if random_nodes is not None else default_nodes(q)
+                fit, re_info = _fit_slopes(driver, fe, fit, re_info, spec.fml, tol, nodes,
+                                           slope_terms, log, logger)
+            elif random_method == "adaptive":
+                fit_a = _fit_adaptive_mnl if kind == "mlogit" else _fit_adaptive
+                fit, re_info = fit_a(driver, fe, fit, re_info, spec.fml, tol, random_nodes, log,
+                                     logger)
+            else:
+                re_info["sigma"] = _sigma_inference(driver, fe, fit)
             sing = fe.singular()
             re_info["singular"] = sing
             if sing:
@@ -437,6 +573,16 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                      "boundary or 'singular' fit): those groups differ no more than chance "
                      "allows, beyond the other terms; consider dropping the grouping. Its "
                      "standard errors are not meaningful at the boundary.", logger)
+        elif slopes is not None:
+            fit, slope_info = fe.fit(driver, theta0, spec.fml, tol=random_tol)
+            if not slope_info["converged"]:
+                warn(f"{spec.fml}: the random slopes' fit did not converge", logger)
+            if fe.singular:
+                warn(f"{spec.fml}: the random slopes by {slopes[0]} have an estimated variance "
+                     "of zero in some direction (held at the floor, an sd of 0.001): the "
+                     "regions differ no more than chance allows", logger)
+        elif getattr(fe, "solver", None) == "contraction":
+            fit = fe.run_contraction(driver, theta0, spec.fml)
         else:
             fit = driver.run(theta0, spec.fml)
         if binary and link == "probit":
@@ -477,7 +623,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             cl_index = {k: (i, int(p0.cluster_tables[k].height))
                         for i, k in enumerate(clusters)}
             M, U = driver.meat(fit.theta, fit.H, weights_type, cl_index, hetero)
-            if kind in ("mlogit", "ologit"):
+            if kind in ("mlogit", "ologit") or (kind == "clogit" and fe is not None):
                 # a cluster whose rows were all dropped (a fixed effect's separation)
                 # is not one: G counts the clusters of the rows used
                 cl_index = {k: (i, int(np.count_nonzero(np.any(U[k] != 0, axis=1))))
@@ -519,7 +665,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         # the null with only the fixed effect: free, from its outcome counts
         # (with an offset the groups' shares are not the fixed-effect-only fit: none is reported)
         ll_fe0 = (fe.loglik_fe_only() * wfix
-                  if fe is not None and random is None and offset is None else np.nan)
+                  if fe is not None and random is None and offset is None
+                  and hasattr(fe, "loglik_fe_only") else np.nan)
         diagnostics = {
             "newton": {"iterations": fit.iterations, "converged": fit.converged,
                        "decrement": fit.decrement, "step_halvings": fit.halvings,
@@ -554,6 +701,11 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             diagnostics["random_effects"]["sigma_gradient"] = re_info["sigma"]["gradient"]
         if fe is not None and (random is None or outer is not None):
             diagnostics["separation"] = fe.separation
+            if hasattr(fe, "solver"):
+                diagnostics["alternative_constants"] = {
+                    "fe_solver": fe.solver, "groups": int(fe.C),
+                    "largest_group": int(fe.comp_size.max()) if fe.C else 0,
+                    "free": int(fe.n_params)}
         _separation_warning(spec, model, beta, np.sqrt(np.diag(all_vcovs["iid"][0])), fit, p0,
                             logger)
         if binary:
@@ -565,7 +717,8 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                             nested_terms[one] = _nested_in_cluster(p0, fe, cl_index[one][0])
                     nested_by_req[req] = any(nested_terms[one] for one, _, _ in parts)
             names, beta, all_vcovs, vfac = _binary_report(names, beta, all_vcovs, N, P, k_fe,
-                                                          nested_by_req)
+                                                          nested_by_req,
+                                                          scale=random is None)
             V, df_t = all_vcovs[vkey]
             diagnostics["irls"] = {"iterations": fit.iterations, "converged": fit.converged,
                                    "decrement": fit.decrement, "tol": tol,
@@ -585,17 +738,25 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                       firth=bool(firth),
                       n_params=P + k_fe,
                       converged=fit.converged and (re_info is None or re_info["converged"]),
-                      fe_names=(list(spec.fe) if random is None
+                      fe_names=(list(spec.fe[:-1]) if slopes is not None
+                                else list(spec.fe) if random is None
                                 else [outer] if outer is not None else []),
                       l2=float(l2),
-                      n_levels=({spec.fe[0]: fe.G} if fe is not None and random is None
+                      n_levels=({nm: g for nm, g in zip(fe.names, fe.G)} if hasattr(fe, "names")
+                                else {spec.fe[0]: fe.G} if fe is not None and random is None
                                 else {outer: fe.fixed_factor.G} if outer is not None else {}),
                       random_effects=({} if random is None else {
                           f.name: {"group": f.name, "n_groups": int(f.n_eff), "Sigma": f.S.copy(),
                                    "cov": random_cov, "method": random_method,
+                                   "nodes": (int(re_info.get("adaptive_nodes", random_nodes or 0))
+                                             if random_method == "adaptive"
+                                             else 1 if random_method == "laplace" else 0),
                                    "within": outer, "structure": fe.kind,
-                                   "levels": (list(p0.levels[1:]) if kind == "mlogit"
+                                   "levels": (list(fe.slope_labels) if slope_terms is not None
+                                              else list(p0.levels[1:]) if kind == "mlogit"
                                               else ["location"]),
+                                   **({"terms": list(slope_terms)} if slope_terms is not None
+                                      else {}),
                                    **re_info["sigma"]["by_factor"][f.name]}
                           for f in fe.random}))
         xexprs = dict(spec.x)
@@ -606,6 +767,17 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                  "incomplete": p0.incomplete}
         if fe is not None:
             rspec.update(fe.result_spec(fit.theta))
+            if slope_terms is not None:
+                # the random slopes' table, and how predict adds them
+                ss = fe.slope_spec
+                (gname,) = ss["ranef"]
+                rspec["ranef"] = ss["ranef"]
+                rspec["ranef_cov"] = ss["ranef_cov"]
+                rspec["slope_layout"] = ss["slope_layout"]
+                rspec["slope_values"] = ss["slope_values"]
+                rspec["effects"] = ([e for e in rspec["effects"] if e[2] != "random"]
+                                    + [(gname, ss["slope_values"][gname], "random_slopes")])
+        rspec["draw"] = _draw_info(fe, fit, random, random_method, kind)
         if kind == "mlogit" and model.own:
             rspec["free"] = model.free().copy()
         if kind == "mlogit":
@@ -613,7 +785,9 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
                                          _spec=rspec)
         elif kind == "ologit":
             if binary:
-                common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None else {})
+                if random is None:
+                    common["n_levels"] = ({spec.fe[0]: int(fe.n_params)} if fe is not None
+                                          else {})
                 cls = BinaryProbitResult if link == "probit" else BinaryLogitResult
                 res = cls(**common, levels=list(p0.levels), family=link,
                                         deviance=float(-2 * ll), k_fe=int(k_fe), _spec=rspec)
@@ -628,11 +802,42 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
         else:
             res = ConditionalLogitResult(**common, case=list(case), n_cases=int(p0.n_cases),
                                          _spec=rspec)
+            if slopes is not None:
+                from .random_effects.fit import _sigma_summary
+                own, Vf, _, _ = fe.sigma_info
+                res.random_effects = {slopes[0]: {
+                    "group": slopes[0], "n_groups": int(fe.n_regions),
+                    "Sigma": fe.Sigma.copy(), "cov": "unstructured", "method": "laplace",
+                    "nodes": 1, "within": None, "structure": "slopes",
+                    "levels": list(fe.slopes),
+                    "region_of": "alternative" if fe.mixed else "choice set",
+                    **_sigma_summary(fe.Sigma, Vf, own)}}
+                res.diagnostics["random_slopes"] = slope_info
         p0.store.delete()
         return res
     finally:
         if not keep_intermediates:
             run.cleanup()
+
+
+def _draw_info(fe, fit, random, random_method, kind):
+    """What `draw_parameters` needs, kept on the result (see draws.py)."""
+    if random is not None:
+        if random_method != "adaptive":
+            return {"kind": None, "why": "with random intercepts it needs "
+                    "random_method='adaptive'"}
+        return getattr(fe, "draw_info", None) or {"kind": None, "why": "no draw information"}
+    if kind == "cfelogit":
+        return {"kind": "beta"}               # the unit effects are conditioned out
+    if fe is None:
+        return {"kind": "beta"}
+    if hasattr(fe, "draw_info") and getattr(fit, "H", None) is not None:
+        return fe.draw_info(fit.theta, fit.H)          # absorbed alternative constants
+    from .fe import _AbsorbedFE
+    if isinstance(fe, _AbsorbedFE) and getattr(fit, "H", None) is not None:
+        from .draws import fe_draw_info
+        return fe_draw_info(fe, fit.theta, fit.H)
+    return {"kind": None, "why": "it needs at most one absorbed fixed effect"}
 
 
 def _own_columns(own_covariates):

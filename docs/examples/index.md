@@ -4,8 +4,10 @@ Each page here follows one of the scripts in
 [`examples/`](https://github.com/leetucker/logit-stream/tree/main/examples) of
 the repository: it explains what the script shows, with its output, and
 ends with the script itself, which you can download from the link at the top
-of the page. The scripts run on simulated data from `logit_stream.simulate`,
-so there is nothing else to download and nothing to configure. Each script
+of the page. The random-intercepts and conditional-logit pages have a
+second, short script for their random-slopes sections. The scripts run on
+simulated data from `logit_stream.simulate`, so there is nothing else to
+download and nothing to configure. Each script
 stands alone, so a downloaded one runs anywhere logit-stream is installed:
 
 ```bash
@@ -14,11 +16,12 @@ python quickstart.py
 ```
 
 or, from a clone of the repository, `python examples/quickstart.py`. Most
-take a few seconds; the random-intercepts and mixed-logit examples take
-about a minute, since they fit several models each. The scripts that write
-files put them in an `output/` directory next to the script, which you can
-delete afterwards. The outputs shown on these pages are from those runs,
-abridged; your numbers may differ in the last digits.
+take a few seconds; the random-intercepts and mixed-logit examples, and
+the [imputation](../imputation/index.md) section's constrained-assignment
+example, take about a minute, since they fit several models or draw many
+imputations. The scripts that write files put them in an
+`output/` directory next to the script, which you can delete afterwards. The outputs shown on these pages
+are from those runs, abridged; your numbers may differ in the last digits.
 
 | | |
 |---|---|
@@ -26,13 +29,16 @@ abridged; your numbers may differ in the last digits.
 | [Binary outcomes](binary.md) | the logit and probit with fixed effects, and Firth's penalized likelihood for separation |
 | [Multinomial logit](multinomial.md) | parameterization, standard errors (robust, clustered, multi-way, jackknife), weights, ridge |
 | [Ordered logit and probit](ordered.md) | cutpoints, levels, residuals and predictions |
-| [Conditional logit](conditional.md) | long-format choice data, alternative-specific constants, policy scenarios |
+| [Conditional logit](conditional.md) | long-format choice data, alternative-specific constants, policy scenarios, random slopes by region |
 | [Nested logit](nested.md) | nests of alternatives, the dissimilarity parameters, substitution, deeper trees |
 | [Mixed logit](mixed.md) | random coefficients, panels of repeated choices, simulation draws |
 | [Fixed effects](fixed_effects.md) | absorbing a fixed effect in the multinomial and ordered logit, and several |
-| [Random intercepts](random_intercepts.md) | group intercepts with an estimated covariance, nested groupings, shrinkage |
+| [Random intercepts](random_intercepts.md) | group intercepts with an estimated covariance, nested groupings, shrinkage, random slopes |
 | [Incidental parameters](incidental_parameters.md) | the fixed-effects logit's bias in short panels, the bias correction, and Chamberlain's conditional logit |
-| [Imputation at scale](imputation.md) | predicting a characteristic for a large file, and combining the predictions with other information |
+
+Imputation with these models, from predicting at scale to multiple
+imputation and choices with known totals, has [its own
+section](../imputation/index.md).
 
 ## The simulated data
 
@@ -66,5 +72,4 @@ mixed
 fixed_effects
 random_intercepts
 incidental_parameters
-imputation
 ```

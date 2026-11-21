@@ -155,20 +155,6 @@ def test_recovers_the_parameters(fit):
     assert np.max(np.abs(fit.diagnostics["gradient"])) < 1e-3
 
 
-def test_matches_r_mlogit(fit):
-    """R's mlogit (3.0) on the same data, `nests=` as here, unscaled = FALSE
-    (RU2), the walk nest's parameter held at 1: its estimates (to its
-    convergence tolerance); its standard errors are the BHHH ones, which
-    the scores here reproduce to six digits (checked when written)."""
-    r = {"cost": -0.590172, "time": -0.040302, "C(alt)[T.bus]": 0.671819,
-         "C(alt)[T.car]": 0.977775, "C(alt)[T.train]": 0.776576, "C(alt)[T.walk]": 0.216576,
-         "lambda.private": 0.648473, "lambda.public": 0.438938}
-    c = fit.coef()
-    for k, v in r.items():
-        assert c[k] == pytest.approx(v, abs=1e-5), k
-    assert fit.loglik == pytest.approx(-4750.245, abs=1e-3)
-
-
 def test_all_lambdas_one_is_the_conditional_logit(data):
     """Nests of single alternatives: refused (the model is the conditional
     logit); and the likelihood at lambda = 1 is the conditional logit's."""
@@ -316,3 +302,24 @@ def test_offset(data):
     np.testing.assert_allclose(b.predict(data.head(20)).collect()["prob"].to_numpy(),
                                a.predict(data.head(20)).collect()["prob"].to_numpy(), atol=1e-6)
 
+
+
+def test_matches_r_mlogit(data):
+    """R 4.5.3, mlogit 2.0.0: mlogit(chosen ~ cost + time, data = dfidx(...),
+    nests = list(private = c("car", "bike"), public = c("bus", "train"),
+    foot = "walk"), constPar = "iv:foot") on this data, RU2 (its default):
+    the estimates and the log-likelihood. (Its standard errors come from
+    BFGS's approximate Hessian, as it has no analytic one for the nested
+    logit; its BHHH ones the scores here reproduce to six digits, checked
+    when first written.)"""
+    f = nlogit_stream("chosen ~ cost + time + C(alt)", data, case="case", alt="alt",
+                      nests=NESTS, verbose=False, tol=1e-12)
+    ref = {"cost": -0.5901721225, "time": -0.0403018921, "C(alt)[T.bus]": 0.6718187570,
+           "C(alt)[T.car]": 0.9777754431, "C(alt)[T.train]": 0.7765764959,
+           "C(alt)[T.walk]": 0.2165759395, "lambda.private": 0.6484726871,
+           "lambda.public": 0.4389382012}
+    co = dict(zip(f.coefnames, f.beta))
+    se = dict(zip(f.coefnames, f.se))
+    for k, v in ref.items():
+        assert abs(co[k] - v) < 1e-3 * se[k], (k, co[k], v)
+    assert f.loglik == pytest.approx(-4750.24457093, abs=1e-6)

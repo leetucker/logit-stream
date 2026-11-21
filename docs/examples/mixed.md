@@ -33,7 +33,7 @@ fit.summary()
 ```
 
 ```text
-### chosen ~ cost + time + C(alt) + income_car
+### chosen ~ 1 + cost + time + C(alt) + income_car
 Mixed logit (logit_stream, Newton)   vcov: CRV1:person
 choosers: 4,000   choice sets: 20,000   alternatives (rows): 54,024
 random: time normal   simulation: 500 Halton draws per chooser
@@ -154,12 +154,12 @@ draws need far fewer points for the same accuracy:
 ┌───────┬────────┬───────────┬──────────┬───────────────┬─────────┐
 │ draws ┆ halton ┆ time      ┆ sd.time  ┆ loglik        ┆ seconds │
 ╞═══════╪════════╪═══════════╪══════════╪═══════════════╪═════════╡
-│ 50    ┆ true   ┆ -1.276351 ┆ 1.008308 ┆ -16245.569043 ┆ 3.89    │
-│ 50    ┆ false  ┆ -1.259164 ┆ 0.977691 ┆ -16272.157087 ┆ 1.71    │
-│ 200   ┆ true   ┆ -1.276477 ┆ 1.004917 ┆ -16245.308398 ┆ 2.57    │
-│ 200   ┆ false  ┆ -1.27447  ┆ 1.003797 ┆ -16243.728855 ┆ 3.2     │
-│ 500   ┆ true   ┆ -1.276978 ┆ 1.004795 ┆ -16244.957049 ┆ 4.92    │
-│ 500   ┆ false  ┆ -1.278302 ┆ 1.002477 ┆ -16245.316171 ┆ 5.07    │
+│ 50    ┆ true   ┆ -1.276351 ┆ 1.008308 ┆ -16245.569043 ┆ 0.79    │
+│ 50    ┆ false  ┆ -1.259164 ┆ 0.977691 ┆ -16272.157087 ┆ 0.79    │
+│ 200   ┆ true   ┆ -1.276477 ┆ 1.004917 ┆ -16245.308398 ┆ 1.31    │
+│ 200   ┆ false  ┆ -1.27447  ┆ 1.003797 ┆ -16243.728855 ┆ 1.39    │
+│ 500   ┆ true   ┆ -1.276978 ┆ 1.004795 ┆ -16244.957049 ┆ 2.53    │
+│ 500   ┆ false  ┆ -1.278302 ┆ 1.002477 ┆ -16245.316171 ┆ 2.4     │
 └───────┴────────┴───────────┴──────────┴───────────────┴─────────┘
 ```
 
@@ -188,7 +188,7 @@ variance, are at the estimates. Each step is followed by a line search.
 (experimental), with the likelihood vectorized over rows and draws and the
 draws generated on the device.
 
-## Not in the prototype
+## Not yet available
 
 Correlated random coefficients, distributions other than the normal and
 lognormal, weights, predictions and residuals, and clustering beyond the

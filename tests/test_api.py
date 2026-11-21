@@ -63,9 +63,14 @@ def test_clustering_by_interaction(mnl_data):
     assert r.n_clusters == {"g^cl": mnl_data.select("g", "cl").unique().height}
 
 
-def test_fe_not_for_clogit(choice_data):
-    with pytest.raises(ValueError, match="not available for the conditional"):
-        clogit_stream("chosen ~ cost | alt", choice_data, case="case", verbose=False)
+def test_clogit_alternative_constants_are_c_alt(choice_data):
+    """Absorbing the alternatives' constants is C(alt)."""
+    a = clogit_stream("chosen ~ cost | alt", choice_data, case="case", verbose=False)
+    b = clogit_stream("chosen ~ cost + C(alt)", choice_data, case="case", verbose=False)
+    np.testing.assert_allclose(a.beta[0], b.beta[list(b.coefnames).index("cost")], rtol=1e-7)
+    k = list(b.coefnames).index("cost")
+    np.testing.assert_allclose(np.sqrt(a.vcov[0, 0]), np.sqrt(b.vcov[k, k]), rtol=1e-6)
+    assert abs(a.loglik - b.loglik) < 1e-7
 
 
 def test_gpu_engine_needs_cudf_polars(mnl_data):

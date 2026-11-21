@@ -99,12 +99,15 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
            weights: str | None, clusters: dict, case: list | None, levels: list | None,
            in_memory: bool, dtype, block_mb: float, log, panel: list | None = None,
            offset: pl.Expr | None = None, weights_type: str = "aweights",
-           altwise: bool = False, sort_fe: bool = False, budget=None) -> _Pass0:
+           altwise: bool = False, sort_fe: bool | str = False, budget=None) -> _Pass0:
     """Pass 0 for one model (see the module docstring). With `sort_fe` the
     rows are written grouped by the one fixed effect (a group's rows
     consecutive, each group in one block; the passes of fe_kernels.py need
     that), unless one group is too big for a block or, when the rows are not
     grouped already, partitioning them would not fit in `budget`'s headroom.
+    `sort_fe` may instead name one of the groupings (`spec.fe`) to group the
+    rows by (the random intercepts' adaptive quadrature needs it); whether
+    they were is `fe_sorted`.
 
     `clusters` maps each clustering's name to its source columns; `case` is
     the conditional logit's choice-set columns, and `panel` the mixed
@@ -315,8 +318,9 @@ def _build(lf: pl.LazyFrame, spec, kind: str, run_dir: Path, engine: PolarsEngin
                                                 evaluated=evaluated)
     else:
         fe_sorted = False
-        if sort_fe and len(fe_cols) == 1:
-            d, cols = next(iter(fe_cols.items()))
+        if sort_fe and (isinstance(sort_fe, str) or len(fe_cols) == 1):
+            d = sort_fe if isinstance(sort_fe, str) else next(iter(fe_cols))
+            cols = fe_cols[d]
             big = engine.collect(design.group_by(cols).len().select(pl.col("len").max()),
                                  "largest fixed-effect level").item()
             fe_sorted = big <= 4 * rows

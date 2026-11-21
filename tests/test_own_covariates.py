@@ -188,3 +188,28 @@ def test_errors(data):
         mlogit_stream(FML, data, own_covariates=OWN, firth=True, **kw)
     with pytest.raises(ValueError, match="absorbed fixed effect"):
         mlogit_stream("y ~ x1 | g", data, own_covariates=OWN, **kw)
+
+
+def test_matches_r_mlogit(data):
+    """R 4.5.3, mlogit 2.0.0: the shares as an alternative-specific variable
+    with alternative-specific coefficients, mlogit(chosen ~ 0 | x1 + g | s,
+    reflevel = "a", constPar = "s:a", method = "nr") with s = 0 for level a
+    (which has no own covariate here): every estimate and standard error,
+    and the log-likelihood."""
+    fit = mlogit_stream(FML, data, levels=LEVELS, own_covariates=OWN, verbose=False,
+                        tol=1e-12)
+    ref = {  # (estimate, standard error) by level: Intercept, x1, g1, g2, own share
+        "b": [(0.1802456549, 0.1127248751), (0.4440037704, 0.0608975634),
+              (-0.1833733602, 0.1284446094), (0.0601824282, 0.1413871326),
+              (3.0546464879, 0.2475935956)],
+        "c": [(-0.2619307326, 0.1300930314), (0.0468820847, 0.0672136233),
+              (0.0628516847, 0.1453656030), (0.4733179812, 0.1556254613),
+              (1.6806532110, 0.2793462402)],
+        "d": [(0.1533591114, 0.1090464900), (-0.7123740883, 0.0589839690),
+              (0.3177093455, 0.1235452582), (0.9290348583, 0.1355037409),
+              (4.4034282084, 0.2565381109)]}
+    b, se = np.asarray(fit.beta), np.asarray(fit.se)
+    want = np.array([v for lv in ("b", "c", "d") for v in ref[lv]])
+    np.testing.assert_allclose(b, want[:, 0], atol=1e-6)
+    np.testing.assert_allclose(se, want[:, 1], rtol=1e-6)
+    assert fit.loglik == pytest.approx(-5119.75856546, abs=1e-6)

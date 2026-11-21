@@ -308,7 +308,7 @@ def test_ordered(people):
     assert abs(sd - 0.5) < 0.2
     assert _re(f)["levels"] == ["location"]
     tbl = f.ranef().collect()
-    assert tbl.columns[-2:] == ["re_puma", "n_obs"]
+    assert tbl.columns[-3:] == ["re_puma", "sd_puma", "n_obs"]
 
 
 def test_inference_and_postestimation(people, race_fit):
