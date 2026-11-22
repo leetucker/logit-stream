@@ -6,12 +6,12 @@ Stable names
     The names below are the supported API for packages built on this one.
     They change only in a minor release (0.x -> 0.y), with the change in the
     changelog; tests/test_core_api.py pins them. Everything else in the
-    package below the estimators and result classes is internal.
+    package below the estimators and result classes is internal::
 
-    logit_design      formula + data -> LogitDesign (pass 0)
-    LogitDesign       the stored rows of a binary logit, with no absorbed
-                      fixed effect or one; `newton_pass`, `rows`, `cleanup`
-    NewtonMoments     what one pass returns
+        logit_design      formula + data -> LogitDesign (pass 0)
+        LogitDesign       the stored rows of a binary logit, with no absorbed
+                          fixed effect or one; `newton_pass`, `rows`, `cleanup`
+        NewtonMoments     what one pass returns
 
 The model is the binary logit with linear predictor
 
@@ -329,8 +329,9 @@ def logit_design(fml: str, data: Any, *, weights: str | None = None,
         An integer column with values 0, ..., n_splits - 1: each row's split.
     n_splits : int, optional
         With `split_by`.
-    workdir, storage, dtype, block_mb, chunk_mb, polars_engine, max_memory_gb,
-    memory_reserve, verbose, logger
+    workdir, storage, dtype, block_mb, chunk_mb, polars_engine
+        As for `logit_stream`.
+    max_memory_gb, memory_reserve, verbose, logger
         As for `logit_stream`.
 
     Returns
