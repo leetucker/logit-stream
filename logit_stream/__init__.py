@@ -31,6 +31,8 @@ Layout
     nested.py        the nested logit
     device/          the passes on a GPU (CuPy)
     results.py       the result classes
+    core.py          the stable API for packages built on the passes: the binary
+                     logit's stored design and Newton pass
     simulate.py      simulated data for examples and tests
 """
 
@@ -73,7 +75,7 @@ def _version():
         from importlib.metadata import version
         return version("logit-stream")
     except Exception:                   # noqa: BLE001 -- not installed
-        return "0.5.0"
+        return "0.6.0"
 
 
 __version__ = _version()
