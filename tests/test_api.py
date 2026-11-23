@@ -27,7 +27,9 @@ def test_binary_logit(mnl_data):
     df = mnl_data.with_columns((pl.col("yi") == 1).cast(pl.Float64).alias("yb"))
     r = logit("yb ~ x1 + x2", df, verbose=False, iwls_tol=1e-12)
     assert isinstance(r, BinaryLogitResult) and r.family == "logit"
-    assert isinstance(logit("yb ~ x1 + x2 | g + cl", df, verbose=False), HDFEResult)
+    # several fixed effects too: fitted by hdfe-stream (IRLS), reported here
+    two_fe = logit("yb ~ x1 + x2 | g + cl", df, verbose=False)
+    assert isinstance(two_fe, BinaryLogitResult) and not isinstance(two_fe, HDFEResult)
     m = sm.Logit(df["yb"].to_numpy(), sm.add_constant(df.select("x1", "x2").to_numpy())) \
         .fit(disp=0, tol=1e-12)
     np.testing.assert_allclose(r.beta, m.params, rtol=1e-8)

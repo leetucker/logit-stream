@@ -144,14 +144,19 @@ def test_intercept_comes_first_with_its_sign(data, tmp_path):
     assert np.isclose(new.deviance, -2 * new.loglik)
 
 
-def test_routes_to_hdfe_stream_where_this_engine_cannot_fit(data, tmp_path):
+def test_every_binary_fit_is_this_packages_result(data, tmp_path):
+    """Every fit is hdfe-stream's (its fast path where it can, else IRLS),
+    reported as this package's result."""
     kw = dict(workdir=tmp_path, verbose=False)
-    assert isinstance(probit_stream("y ~ x1 | g + h", data, **kw), HDFEResult)
-    assert isinstance(probit_stream("y ~ x1 | g", data, bias_correction=True, **kw), HDFEResult)
+    # several fixed effects: hdfe-stream's IRLS, reported here; IRLS-only options: hdfe-stream's own result
+    assert isinstance(probit_stream("y ~ x1 | g + h", data, **kw), BinaryProbitResult)
+    assert isinstance(probit_stream("y ~ x1 | g", data, bias_correction=True, **kw),
+                      BinaryProbitResult)
     assert isinstance(probit_stream("y ~ x1 | g", data, **kw), BinaryProbitResult)
-    assert isinstance(logit_stream("y ~ x1 | g + h", data, **kw), HDFEResult)
-    assert isinstance(logit_stream("y ~ x1 | g", data, bias_correction=True, **kw), HDFEResult)
-    assert isinstance(logit_stream("y ~ x1 | g", data, separation_check=False, **kw), HDFEResult)
+    assert isinstance(logit_stream("y ~ x1 | g + h", data, **kw), BinaryLogitResult)
+    for extra in ({"bias_correction": True}, {"separation_check": False}):
+        r = logit_stream("y ~ x1 | g", data, **extra, **kw)
+        assert isinstance(r, BinaryLogitResult) and r.diagnostics.get("fit") != "newton"
     # options with no counterpart here are accepted and ignored
     r = logit_stream("y ~ x1 | g", data, iwls_tol=1e-9, iwls_maxiter=30, save_resid=False,
                      within_pseudo_r2=True, fe_dof="pyfixest", **kw)

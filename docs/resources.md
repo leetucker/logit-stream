@@ -81,7 +81,7 @@ option sets the limit and `memory_reserve` the share held back (default 0.15), a
 shrink is refused up front with the numbers. Every fit records `diagnostics["peak_rss_gb"]`. The
 full explanation, with the profile's accuracy and what each package does with the headroom, is in
 [hdfe-stream's documentation](https://leetucker.github.io/hdfe-stream/resources.html).
-One choice here is this package's own: the multinomial and ordered logit (and the binary logit and probit,
-the two-level ordered models) with an absorbed fixed effect sort the rows by it when they are not
+One choice here is this package's own: the multinomial and ordered logit with an absorbed fixed
+effect sort the rows by it when they are not
 grouped already, which partitions them in memory; when that does not fit in what is left, the rows
 stay in their order and the fit is slower.

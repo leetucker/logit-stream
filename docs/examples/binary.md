@@ -8,18 +8,16 @@ $$
 
 with $F$ the logistic distribution function (`logit_stream`) or the
 standard normal's (`probit_stream`), and $\alpha$ the fixed effects, if
-any. Both absorb any number of fixed effects. With no fixed effect or one
-they fit the model with this package's Newton iterations over a stored copy of
-the data (the two-level ordered logit or probit, whose cutpoint is minus the
-intercept) and return a `BinaryLogitResult` or a `BinaryProbitResult`; with
-several fixed effects, or an option only hdfe-stream has
-(`bias_correction=True`, `bootcluster=`, a CRV3 variance), they are
-hdfe-stream's `feglm_stream`, and the result an `hdfe_stream.HDFEResult` ([its
-guide](https://leetucker.github.io/hdfe-stream/examples/glm.html)). The
-results have the same coefficients, variances, fit statistics, `predict`,
-`resid` and `fixef`; the conventions are hdfe-stream's and pyfixest's, below.
-The probit's variances use the expected information, as `feglm_stream`'s
-iteratively reweighted fit does (the observed information, which
+any. Both absorb any number of fixed effects. The fit is hdfe-stream's
+`feglm_stream` ([its guide](https://leetucker.github.io/hdfe-stream/examples/glm.html)):
+with no fixed effect or one, Newton's method over a compact stored copy of the
+data, with the fixed effect profiled out exactly; with several, iteratively
+reweighted least squares with the fixed effects absorbed. Either way the
+result is a `BinaryLogitResult` or a `BinaryProbitResult`, with this package's
+`predict`, `draw_parameters` and multiple imputation (with several fixed
+effects, the draws hold the effects at their estimates), and hdfe-stream's and
+pyfixest's conventions, below. The probit's variances use the expected
+information, as `feglm_stream`'s do (the observed information, which
 `oprobit_stream` reports, differs from it a little for the probit; for the
 logit the two are the same).
 

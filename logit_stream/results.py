@@ -261,9 +261,11 @@ class LogitResult(RegressionResult):
         intercept from its distribution given its rows and the draw.
 
         Available without a fixed effect, with one absorbed fixed effect,
-        and with an adaptive random intercept; not with the Laplace or
-        joint-mode random intercepts, several fixed effects, the mixed or
-        nested logit. `seed`: an int, None or a `numpy.random.Generator`.
+        and with an adaptive random intercept; for the binary logit and
+        probit also with several absorbed fixed effects, whose levels are
+        then held at their estimates (only the coefficients are drawn). Not
+        with the Laplace or joint-mode random intercepts, the mixed or nested
+        logit. `seed`: an int, None or a `numpy.random.Generator`.
 
         For the multinomial logit's random intercepts (adaptive fit), Sigma
         is drawn on the scale of its log-Cholesky factor, carried over from

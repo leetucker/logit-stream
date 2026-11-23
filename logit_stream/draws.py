@@ -288,7 +288,7 @@ def draw(result, n, seed=None):
     fname, fcols = _fe_columns(spec)
     out = []
     c = _iid_factor(result, info)
-    L = _factor(result.vcov if kind in ("beta", "fe", "alt_fe") else info["V"])
+    L = _factor(result.vcov if kind in ("beta", "beta_fixed", "fe", "alt_fe") else info["V"])
     for i in range(n):
         tau = None
         Sigma = None
@@ -320,7 +320,9 @@ def draw(result, n, seed=None):
             A = np.where(ok, A - np.where(ok, A[np.maximum(ref, 0)], 0.0), np.nan)
             out.append(_drawn(result, spec, i, beta, A[:, None], None, fname, fcols))
             continue
-        if kind in ("beta", "fe"):
+        if kind in ("beta", "beta_fixed", "fe"):
+            # beta_fixed (several absorbed fixed effects): the coefficients
+            # drawn, the fixed effects held at their estimates
             beta = beta_hat + L @ rng.standard_normal(P)
             if kind == "fe":
                 d = beta - beta_hat

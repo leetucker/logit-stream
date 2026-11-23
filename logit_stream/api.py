@@ -226,21 +226,20 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
 
     Returns
     -------
-    hdfe_stream.HDFEResult or hdfe_stream.HDFEMulti
+    BinaryLogitResult or LogitMulti
 
     Notes
     -----
-    With no fixed effect or one, and none of hdfe-stream's options that have
-    no counterpart here (``bias_correction``, ``bootcluster``, a CRV3
-    variance, the separation check switched off, ...), the fit is this
-    package's: the two-level ordered logit's Newton iterations over the
-    stored blocks (see `ologit_stream`), reported as a `BinaryLogitResult`
-    with hdfe-stream's conventions for the variance (the iid vcov has the
-    factor (N - 1) / (N - K)) and for the coefficients (``Intercept`` first).
-    It converges on the Newton decrement (``iwls_tol``, if given, is that
-    tolerance; default 1e-8), so the estimates are at the maximum to machine
-    precision. Otherwise the fit is hdfe-stream's, `feglm_stream`, whose
-    convergence is judged on the relative change in deviance.
+    The fit is hdfe-stream's `feglm_stream`: with no fixed effect or one,
+    Newton's method on compact stored rows with the fixed effect profiled out
+    exactly (`hdfe_stream.glm_fast`), converging on the Newton decrement, so
+    the estimates are at the maximum to machine precision; with several fixed
+    effects, or an option only IRLS has (``bias_correction``, the separation
+    check switched off, ...), iteratively reweighted least squares. It is
+    reported as a `BinaryLogitResult`, with hdfe-stream's conventions for the
+    variance (the iid vcov has the factor (N - 1) / (N - K)) and for the
+    coefficients (``Intercept`` first), and this package's predictions, draws
+    and imputation (`logit_stream._binary`).
     A two-level `mlogit_stream` fits the same model, with this package's
     conventions for the variance; it is also the way to Firth's penalized
     likelihood for a binary outcome (``firth=True``).
@@ -255,70 +254,26 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
     return _binary_fit("logit", fml, data, workdir, vcov, cluster, options)
 
 
+# with random=: hdfe-stream's names for this engine's options, and hdfe-stream's
+# options it has no use for (it has no row files, counts a single fixed
+# effect's parameters without `fe_dof`, and reports the within pseudo
+# R-squared whenever there is a fixed effect)
+_RANDOM_RENAME = {"iwls_tol": "tol", "iwls_maxiter": "maxiter"}
+_RANDOM_IGNORED = {"save_resid", "within_pseudo_r2", "fe_dof"}
+
+
 def _binary_fit(family, fml, data, workdir, vcov, cluster, options):
-    """A binary logit or probit: this package's fit where it can, else
-    hdfe-stream's `feglm_stream`."""
-    route = _binary_route(vcov, cluster, options)
+    """A binary logit or probit: hdfe-stream's `feglm_stream`, reported as this
+    package's result (`_binary.binary_fit`); with ``random=``, this package's
+    engine (the two-level ordered model)."""
     if options.get("random") is not None:
-        # random intercepts are this package's fit only (hdfe-stream has none)
-        if route is None:
-            raise ValueError(
-                f"{family}_stream: random= is fitted by this package's engine, which does not "
-                "have every option given (bias_correction=, bootcluster=, CRV3, the "
-                "separation check switched off, ...); drop them to fit random intercepts")
         from .estimator import _fit
+        opts = {_RANDOM_RENAME.get(k, k): v for k, v in options.items()
+                if k not in _RANDOM_IGNORED}
         return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
-                    _binary=True, link=family, **route)
-    if route is not None:
-        from .estimator import _fit, _NeedsHdfe
-        try:
-            return _fit("ologit", fml, data, workdir=workdir, vcov=vcov, cluster=cluster,
-                        _binary=True, link=family, **route)
-        except _NeedsHdfe:
-            pass
-    from hdfe_stream import feglm_stream
-    return feglm_stream(fml, data, family, workdir=workdir, vcov=vcov, cluster=cluster,
-                        **options)
-
-
-# options of hdfe-stream's `feglm_stream` that the fit here ignores (it has no
-# row files, it counts a single fixed effect's parameters without `fe_dof`, and
-# it reports the within pseudo R-squared whenever there is a fixed effect)
-_BINARY_IGNORED = {"save_resid", "within_pseudo_r2", "fe_dof"}
-
-
-def _binary_route(vcov, cluster, options):
-    """The options for this package's fit of a binary logit, or None when only
-    hdfe-stream's does it: an option it has no counterpart of
-    (``bias_correction``, ``bootcluster``, ...), the separation check
-    switched off, or CRV3."""
-    import inspect
-
-    from .estimator import _fit
-    known = set(inspect.signature(_fit).parameters) - {
-        "kind", "fml", "data", "workdir", "vcov", "cluster", "levels", "case", "l2",
-        "firth", "device", "link", "altwise",
-        "poisson_options", "profile", "own_covariates", "_binary"}
-    opts = dict(options)
-    for k in _BINARY_IGNORED:
-        opts.pop(k, None)
-    if opts.pop("separation_check", True) is not True:
-        return None
-    for off, default in (("bias_correction", False), ("bootcluster", None)):
-        if off in opts and opts[off] == default:        # switched off: as not given
-            del opts[off]
-    if "iwls_tol" in opts:
-        opts["tol"] = opts.pop("iwls_tol")
-    if "iwls_maxiter" in opts:
-        opts["maxiter"] = opts.pop("iwls_maxiter")
-    if any(k not in known for k in opts):
-        return None
-    vs = [vcov] + ([cluster] if isinstance(cluster, str) else list(cluster or []))
-    if any("CRV3" in (v if isinstance(v, str) else " ".join(map(str, v))) for v in vs):
-        return None
-    if options.get("fe_dof", "exact") not in ("exact", "pyfixest"):
-        return None
-    return opts
+                    _binary=True, link=family, **opts)
+    from ._binary import binary_fit
+    return binary_fit(family, fml, data, workdir, vcov, cluster, options)
 
 
 def mlogit_stream(fml: str, data: Source, workdir: PathLike | None = None,
@@ -347,10 +302,9 @@ def probit_stream(fml: str, data: Source, workdir: PathLike | None = None,
                   **options: Any):
     """Out-of-core binary probit, with any number of high-dimensional fixed
     effects: as `logit_stream` (see there: the options, the routing, the
-    bias correction), with the standard normal in place of the logistic. With
-    no fixed effect or one the fit is this package's, the two-level ordered
-    probit's Newton iterations, reported as a `BinaryProbitResult`; its
-    variances use the expected information, as `feglm_stream`'s do."""
+    bias correction), with the standard normal in place of the logistic,
+    reported as a `BinaryProbitResult`; its variances use the expected
+    information, as `feglm_stream`'s do."""
     return _binary_fit("probit", fml, data, workdir, vcov, cluster, options)
 
 
