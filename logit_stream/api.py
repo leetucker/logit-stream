@@ -203,12 +203,11 @@ def logit_stream(fml: str, data: Source, workdir: PathLike | None = None,
     effects: hdfe-stream's `hdfe_stream.feglm_stream` with
     ``family="logit"``.
 
-    The fit is iteratively reweighted least squares with the fixed effects
-    absorbed (hdfe-stream's `StreamingGLM`), which for the logit is Newton's
-    method; its options and its result (`hdfe_stream.HDFEResult`, with
-    `fixef`, `resid`, `predict` and `sample`, and `loglik`, `loglik_null`,
-    `pseudo_r2`, `aic` and `bic`, and with fixed effects
-    `pseudo_r2_within`) are hdfe-stream's.
+    Its options and its fit statistics (``loglik``, ``loglik_null``,
+    ``pseudo_r2``, and with fixed effects ``pseudo_r2_within``) are
+    hdfe-stream's; the result is this package's `BinaryLogitResult`, with
+    `fixef`, `sample`, `predict` and draws for multiple imputation (see the
+    notes for how the model is fitted).
 
     Parameters
     ----------

@@ -50,9 +50,8 @@ dropped for separation: 72 observations in 1 levels whose outcome never varies
 └─────────────┴───────────┴────────────┴────────────┴─────────────┘
 ```
 
-The binary logit takes any number of fixed effects: with one or none it is fitted
-by this package's own engine (a `BinaryLogitResult`), with more by hdfe-stream's
-`feglm_stream` (an `hdfe_stream.HDFEResult`). One PUMA where
+The binary logit takes any number of fixed effects. It is fitted by hdfe-stream's
+`feglm_stream` and returns a `BinaryLogitResult` whatever the number. One PUMA where
 nobody is Hispanic was dropped: its effect would be minus infinity. See
 [binary outcomes](binary.md).
 

@@ -9,9 +9,10 @@ package's results with any number of fixed effects.
   effect or one, that is Newton's method on compact stored rows with the fixed effect profiled
   out exactly, from each row's nonzeros for a design of indicators. On a logit of 1 million people
   on 153 indicators with 2,462 PUMA fixed effects, the fit took about 21 s, against about 130 s
-  with this package's previous engine. Without a fixed effect it is a little slower (about 15 s
-  against 12 s, measured on a busy machine). With several fixed effects the fit is IRLS, as
-  before.
+  with this package's previous engine. In the ACS benchmark, on all 12.9 million adults, the
+  binary logit took 5.1 s (7.6 s before) and with the 2,462 PUMA fixed effects 5.9 s (13.6 s); in
+  the panel benchmark, at 10 million rows, the fixed-effects logit took 4.0 s (4.1 s) and the
+  bias-corrected one 7.4 s (7.8 s). With several fixed effects the fit is IRLS, as before.
 - **The result is a `BinaryLogitResult` (or `BinaryProbitResult`) for any number of fixed
   effects**, with `predict`, `draw_parameters` and `predict(type="draw")` for multiple
   imputation. With several fixed effects, which before returned hdfe-stream's `HDFEResult`

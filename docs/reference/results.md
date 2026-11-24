@@ -4,9 +4,8 @@ The result classes subclass hdfe-stream's `RegressionResult`, so the
 reporting methods (`summary`, `tidy`, `confint`, `wald_test`, `with_vcov`,
 `summary_dict`, `summary_json`, `to_pyfixest`) are hdfe-stream's own and
 behave identically. The binary logit and probit return a `BinaryLogitResult` or
-`BinaryProbitResult` (no fixed effect or one), or hdfe-stream's `HDFEResult` where only its engine fits the
-model, as with several fixed effects
-([its reference](https://leetucker.github.io/hdfe-stream/reference/results.html)).
+`BinaryProbitResult` with any number of fixed effects; they are fitted by hdfe-stream
+([its results](https://leetucker.github.io/hdfe-stream/reference/results.html)).
 
 ```{eval-rst}
 .. currentmodule:: logit_stream

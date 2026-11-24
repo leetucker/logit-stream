@@ -37,9 +37,8 @@ fixed effects: puma (1,020 levels)
 With the PUMA effects in the model, as in the simulation, the coefficients
 are closer to those it draws from than without them (`Black:urban` 0.90
 against 0.9; 0.86 without). An interaction of columns is one fixed effect
-(`| state^year`). The binary logit and probit (`logit_stream`, `probit_stream`) absorb one fixed effect
-with this package's own engine, the same as the ordered logit, and any number
-through hdfe-stream; the multinomial logit absorbs any number too,
+(`| state^year`). The binary logit and probit (`logit_stream`, `probit_stream`) absorb any number
+of fixed effects through hdfe-stream; the multinomial logit absorbs any number too,
 [differently](#several-fixed-effects).
 
 ## What is estimated

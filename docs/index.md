@@ -128,7 +128,7 @@ On American Community Survey microdata (see the
 |---|---|---|
 | multinomial, 5 levels, 164 coefficients | 21 s, 1.2 GB | 194 s, 13.3 GB (scikit-learn, Newton–Cholesky) |
 | ordered, 5 levels | 6.6 s, 1.2 GB | 301 s, 8.2 GB (mord, which fits a different loss); statsmodels' `OrderedModel` timed out (30 minutes) from 3 million rows |
-| binary | 7.6 s, 1.3 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
+| binary | 5.1 s, 1.3 GB | 23 s, 12.0 GB (scikit-learn, Newton–Cholesky) |
 
 On a binary logit with only 41 columns, scikit-learn's Newton–Cholesky solver
 takes the same Newton steps in memory: it is faster below about a million
