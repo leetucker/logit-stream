@@ -27,9 +27,9 @@ import polars as pl
 from hdfe_stream.core.results_base import RegressionMulti, RegressionResult
 from scipy import special
 
+from .core.models import LINKS
+from .core.store import check_source
 from .mi import categorical
-from .models import LINKS
-from .store import check_source
 
 
 def as_lazy(source):

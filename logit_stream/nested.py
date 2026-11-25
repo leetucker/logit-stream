@@ -347,7 +347,7 @@ class _NestedDriver(_GradientDriver):
     def meat(self, theta, weighted, weights_type, clusters, hetero):
         """The robust variances' middle matrices from the choice sets'
         scores, as `_Driver.meat` forms them: one read."""
-        from .newton import _Driver
+        from .core.newton import _Driver
         P = self.P
         TH = np.ascontiguousarray(theta[None, :], dtype=np.float64)
         if self.device is not None:
@@ -485,11 +485,11 @@ def _fit_nested(fml, data, *, case, alt, nests, vcov="iid", cluster=(), weights=
     from hdfe_stream.core.workspace import Run
 
     from ._choice import clogit_start, fit_diagnostics, plan_one
+    from .core.newton import _Driver
+    from .core.store import CODE, _build
     from .device import resolve
     from .estimator import _base_dir, _clogit_null, _clustered, _clusterings, _log
-    from .newton import _Driver
     from .results import NestedLogitResult, _ic
-    from .store import CODE, _build
 
     if weights_type not in ("aweights", "fweights"):
         raise ValueError("weights_type must be 'aweights' or 'fweights'")

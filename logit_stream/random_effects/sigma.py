@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..fe import _sym
+from ..core.fe import _sym
 from .linalg import _sum_by
 
 VAR_FLOOR = 1e-6            # Sigma's eigenvalues at least this (an sd of 0.001): a variance

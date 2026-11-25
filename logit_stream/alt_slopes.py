@@ -63,8 +63,8 @@ import polars as pl
 from hdfe_stream.core.report import warn
 
 from .alt_fe import _alt_matvec, _AlternativeFE
-from .newton import _Driver, _Fit
-from .store import CODE
+from .core.newton import _Driver, _Fit
+from .core.store import CODE
 
 SLOPES_MAX = 2000           # regions x slopes, at most (the dense coefficients)
 SIGMA_START = 0.01          # Sigma's starting diagonal

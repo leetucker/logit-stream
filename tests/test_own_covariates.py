@@ -6,7 +6,8 @@ import polars as pl
 import pytest
 from scipy.optimize import minimize
 
-from logit_stream import mlogit_stream, models
+from logit_stream import mlogit_stream
+from logit_stream.core import models
 
 LEVELS = ["a", "b", "c", "d"]
 OWN = {"b": "s_b", "c": "s_c", "d": "s_d"}

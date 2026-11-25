@@ -102,7 +102,7 @@ def test_matches_clmm_laplace():
 def test_third_derivatives():
     """The exact Laplace approximation's terms are derivatives of the
     information: check them by differencing it."""
-    from logit_stream.fe import _ordered_info_derivs
+    from logit_stream.core.fe import _ordered_info_derivs
     rng = np.random.default_rng(0)
     # multinomial: d (diag p - p p') / d eta_k, and c = its trace with M^-1
     d = 3

@@ -12,8 +12,9 @@ from hdfe_stream.core.store import PolarsEngine
 from hdfe_stream.core.utils import as_lazy
 
 from logit_stream._frontend import _plan
-from logit_stream.models import _Ordered
-from logit_stream.newton import _Driver
+from logit_stream.core.models import _Ordered
+from logit_stream.core.newton import _Driver
+from logit_stream.core.store import _build
 from logit_stream.random_effects import (
     _fit_random,
     _RandomEffects,
@@ -21,7 +22,6 @@ from logit_stream.random_effects import (
     _sigma_inference,
 )
 from logit_stream.random_effects.adaptive import _Adaptive
-from logit_stream.store import _build
 
 
 def setup(fml, df, random, *, laplace=True, offset=None, tol=1e-10, random_tol=1e-8):

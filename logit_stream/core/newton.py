@@ -163,7 +163,7 @@ class _Driver:
     def _device_pass(self, theta, hessian, firth_A=None):
         """`_plain_pass` on the GPU (device/): the blocks' sums formed
         there, and only they brought back."""
-        from . import device
+        from .. import device
         self.passes += 1
         be, m = self.device, self.model
         xp = be.xp
@@ -469,7 +469,7 @@ class _Driver:
         if self.fe is not None:
             return self.fe.meat(self, theta, H, weights_type, clusters, hetero)
         if self.device is not None:
-            from . import device
+            from .. import device
             return device.plain_meat(self.device.xp, self, theta, weights_type, clusters,
                                      hetero)
         m = self.model

@@ -29,8 +29,9 @@ from hdfe_stream.core.workspace import Run
 
 from ._frontend import _plan
 from ._limits import limited
-from .models import _CFELogit, _Conditional, _Multinomial, _Ordered
-from .newton import _Driver
+from .core.models import _CFELogit, _Conditional, _Multinomial, _Ordered
+from .core.newton import _Driver
+from .core.store import SORT_FE, _build
 from .random_effects import (
     ADAPTIVE_NODES,
     MIN_NODES,
@@ -54,7 +55,6 @@ from .results import (
     OrderedProbitResult,
     _ic,
 )
-from .store import SORT_FE, _build
 
 WORKDIR_ENV = "LOGIT_STREAM_WORKDIR"
 
@@ -525,7 +525,7 @@ def _fit_one(kind, spec, lf, engine, *, vkey, clusters, requests, hetero, weight
             fe = _AlternativeFE(model, p0, spec.fe, log=log, logger=logger, budget=budget,
                                 solver=fe_solver)
         elif spec.fe:
-            from .fe import _AbsorbedFE
+            from .core.fe import _AbsorbedFE
             fe = _AbsorbedFE(model, p0, spec.fe[0], log=log, logger=logger, budget=budget)
         driver = _Driver(p0.store, model, tol=tol, maxiter=maxiter, l2=l2, firth=firth,
                          chunk_mb=chunk_mb, device=device,
@@ -833,7 +833,7 @@ def _draw_info(fe, fit, random, random_method, kind):
         return {"kind": "beta"}
     if hasattr(fe, "draw_info") and getattr(fit, "H", None) is not None:
         return fe.draw_info(fit.theta, fit.H)          # absorbed alternative constants
-    from .fe import _AbsorbedFE
+    from .core.fe import _AbsorbedFE
     if isinstance(fe, _AbsorbedFE) and getattr(fit, "H", None) is not None:
         from .draws import fe_draw_info
         return fe_draw_info(fe, fit.theta, fit.H)

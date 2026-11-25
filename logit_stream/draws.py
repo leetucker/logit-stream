@@ -81,7 +81,7 @@ def fe_draw_info(fe, theta, H):
     H = fe._schur(H)
     free = np.asarray(fe.free, bool)
     Dinv = np.where(free[:, :, None] & free[:, None, :], H.Dinv, 0.0)
-    from .newton import _Driver
+    from .core.newton import _Driver
     Vred = _Driver.inverse(H.red) if P else np.zeros((0, 0))
     return {"kind": "fe", "A": fe._effects(theta).copy(), "free": free, "Vred": Vred,
             "fixed": (fe.fixed if fe.model.kind == "mlogit" else None),
@@ -98,7 +98,7 @@ def adaptive_draw_info(ad, E, b, alpha, nu, nu_free):
     if sysm is None:
         return {"kind": None, "why": "the fixed effect's information is not positive"}
     A, _, Jea, Daa, idx = sysm
-    from .newton import _Driver
+    from .core.newton import _Driver
     V = _Driver.inverse(A)
     th = np.r_[b, nu] if nu_free else np.asarray(b, float).copy()
     out = {"kind": "adaptive", "theta": th, "V": V, "P": P, "nu": float(nu),
@@ -122,7 +122,7 @@ def adaptive_mnl_draw_info(fit, E, b, alpha, lam):
     if sysm is None:
         return {"kind": None, "why": "the fixed effect's information is not positive"}
     A, _, JaE, Dinv, free = sysm
-    from .newton import _Driver
+    from .core.newton import _Driver
     # the draws are of (b, psi), psi Sigma's log-Cholesky elements (always a valid
     # Sigma, without the heavy tail that Sigma = Lambda^-1 has when a draw of Lambda
     # is near singular); their covariance from (b, lambda)'s by the Jacobian
@@ -492,7 +492,7 @@ def _ranef_setup(result):
         raise ValueError("draw_ranef needs nested (not crossed) groupings")
     if mnl:
         return name, list(result._spec["fe_cols"][name]), None
-    from .models import LINKS
+    from .core.models import LINKS
     return name, list(result._spec["fe_cols"][name]), LINKS[result.link]
 
 

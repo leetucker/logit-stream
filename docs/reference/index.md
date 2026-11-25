@@ -22,6 +22,8 @@ which are in `logit_stream.simulate`.
 | `simulate_people`, `simulate_choices`, `simulate_panel` | simulated data with known coefficients |
 | `lr_test` | the likelihood-ratio test of nested models, with the boundary mixture for a variance |
 | `pool`, `pool_matrix` | combining multiply-imputed analyses by Rubin's rules, with joint tests |
+| **[Building on the passes](core.md)** | |
+| `logit_stream.core`: `logit_design`, `LogitDesign`, `NewtonMoments` | the multinomial and ordered models' stored design and Newton pass, for packages that run their own iteration (penalized-stream) |
 | `logit_stream.assign` | constrained assignment to known totals: `sample_assignments`, the samplers `SwapMCMC`, `ExactSmall`, `Balanced`, and `GaussianPenalty` (experimental) |
 
 ```{toctree}
@@ -30,4 +32,5 @@ which are in `logit_stream.simulate`.
 estimation
 results
 utilities
+core
 ```

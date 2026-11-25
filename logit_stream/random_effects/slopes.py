@@ -36,7 +36,7 @@ import numba as nb
 import numpy as np
 import polars as pl
 
-from ..models import _ord_terms
+from ..core.models import _ord_terms
 from .adaptive_mnl import (
     _E,
     HALF_LOG_2PI,
@@ -660,7 +660,7 @@ class _AdaptiveSlopes(_AdaptiveMNL):
         sds = ["sd_" + c[3:] for c in cols]
         sd = np.sqrt(np.clip(np.diagonal(cov, axis1=1, axis2=2), 0, None))
         n = pl.Series(f.ncnt.sum(axis=1).astype(np.int64))
-        from ..store import CODE
+        from ..core.store import CODE
         table = re.p0.fe_tables[name].with_columns(
             **{c: pl.Series(mode[:, k]) for k, c in enumerate(cols)},
             **{c: pl.Series(sd[:, k]) for k, c in enumerate(sds)}, n_obs=n)

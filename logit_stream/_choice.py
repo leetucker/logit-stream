@@ -26,8 +26,8 @@ def plan_one(fml, lf, engine, log, model):
 def clogit_start(p0, xnames, spec, logger, log):
     """The conditional logit on the store: the starting point (it refuses
     collinear covariates, which these fits do not drop)."""
-    from .models import _Conditional
-    from .newton import _Driver
+    from .core.models import _Conditional
+    from .core.newton import _Driver
     log("starting values: the conditional logit")
     K = len(xnames)
     cdrv = _Driver(p0.store, _Conditional(xnames, K), tol=1e-8, maxiter=50, l2=0.0,
