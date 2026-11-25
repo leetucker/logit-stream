@@ -69,6 +69,12 @@ from .store import CODE, PREFIX, SORT_FE, _build, _rescale_weights
 __all__ = ["logit_design", "LogitDesign", "NewtonMoments"]
 
 SPLIT = f"{PREFIX}split"            # the split's clustering
+# The rows from which a block's sums are the fused kernels' (where the model
+# has them). The estimators wait for MNL_KERNEL_MIN_ROWS, as a pass over a
+# few rows does not repay the kernels' threads there; a design's pass cuts
+# each block by split and evaluates several models on each piece, where the
+# kernels win from far fewer rows.
+KERNEL_MIN_ROWS = 256
 MODELS = {"multinomial": "mlogit", "ordered": "ologit"}
 
 
@@ -198,7 +204,8 @@ class _Sums:
 
     def _add_plain(self, blk):
         m, th, hessian = self.model, self.theta, self.hessian
-        if m.kernel_ok(len(blk["y"])):
+        n = len(blk["y"])
+        if n >= KERNEL_MIN_ROWS and m.kernel_ok(max(n, MNL_KERNEL_MIN_ROWS)):
             l, g, H = m.accumulate_full(th, blk["X"], m.cols, blk["y"], blk.get("w"), None,
                                         hessian)
             if not np.isfinite(l):
@@ -221,7 +228,7 @@ class _Sums:
 
     def _add_fe(self, blk):
         fe, m, th = self.fe, self.model, self.theta
-        if self.kp is not None and len(blk["y"]) >= MNL_KERNEL_MIN_ROWS:
+        if self.kp is not None and len(blk["y"]) >= KERNEL_MIN_ROWS:
             return self.kp.add(blk)
         ll = 0.0
         for ch in _chunks(blk, self.rows):
