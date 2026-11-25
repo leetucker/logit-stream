@@ -302,6 +302,34 @@ def test_kernels_and_arrays_agree(big, case, monkeypatch):
                                    atol=1e-9)
 
 
+@pytest.mark.parametrize("case", ["mlogit", "mlogit fe", "ologit fe"])
+def test_gradient_from_another_pass(data, case):
+    """profiled and effects_step with another pass's gradient: this pass's
+    information, that pass's gradients."""
+    model, link, fml = CASES[case]
+    with core.logit_design(fml, data, model=model, link=link) as ld:
+        th, A = ld.start()
+        th2 = th.copy()
+        th2[ld.penalized] += 0.05
+        a = ld.newton_pass(th, A)
+        b = ld.newton_pass(th2, A, information=False)
+        C, g = a.profiled(0, gradient=(b, 0))
+        C0, _ = a.profiled(0)
+        np.testing.assert_array_equal(C, C0)
+        if A is None:
+            np.testing.assert_allclose(g, b.gradient[0, a.parameters])
+            assert a.effects_step(np.zeros(len(g)), 0, gradient=(b, 0)) is None
+            return
+        # by hand: g_t - I_ta I_aa^-1 g_a, with b's g_t and g_a
+        G, m = a.effects_gradient.shape[1:]
+        Dinv = np.linalg.pinv(a.effects_information[0].reshape(G, m, m))
+        corr = np.einsum("gjc,gjk,gk->c", a.cross[0], Dinv, b.effects_gradient[0] * a._free[0])
+        np.testing.assert_allclose(g, b.gradient[0, a.parameters] - corr, rtol=1e-8, atol=1e-8)
+        d = a.effects_step(np.zeros(len(g)), 0, gradient=(b, 0))
+        np.testing.assert_allclose(d, np.einsum("gjk,gk->gj", Dinv, b.effects_gradient[0])
+                                   * a._free[0], rtol=1e-8, atol=1e-10)
+
+
 def test_design_facts(data):
     with core.logit_design(f"ym ~ {RHS} | g", data, model="multinomial", weights="w",
                            split_by="fold", n_splits=3) as ld:

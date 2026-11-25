@@ -133,26 +133,39 @@ class NewtonMoments:
             self._reduced[m] = self._fe._schur(H)
         return self._reduced[m]
 
-    def profiled(self, m: int = 0):
+    def _gradients(self, m, gradient):
+        if gradient is None:
+            return self.gradient[m], self.effects_gradient[m] if self._fe is not None else None
+        other, j = gradient
+        return other.gradient[j], (other.effects_gradient[j] if self._fe is not None else None)
+
+    def profiled(self, m: int = 0, gradient=None):
         """(information, gradient) of model m for the `parameters`, with the
         effects profiled out: I_tt - I_ta I_aa^-1 I_at and g_t - I_ta I_aa^-1
         g_a. Without a fixed effect, the model's information and gradient
-        over the `parameters`."""
+        over the `parameters`.
+
+        `gradient`, a pair ``(moments, index)`` of another pass (made with or
+        without the information), takes the gradients from that pass's model
+        `index` in place of this one's: a Newton step with this pass's
+        information at another point's gradient (an iteration that keeps the
+        information across steps, as it changes little, and makes the
+        passes between without it, which cost much less)."""
         if self.information is None:
             raise ValueError("the pass was made without the information")
-        g = self.gradient[m, self.parameters]
+        gt, ga = self._gradients(m, gradient)
+        g = gt[self.parameters]
         if self._fe is None:
             return self.information[m], g
         H = self._schur(m)
         G, J = self.effects_gradient.shape[1:]
         Bf = H.ta.reshape(G * J, -1)
-        ga = self.effects_gradient[m]
         return H.red, g - Bf.T @ (H.Dinv @ ga[..., None]).reshape(G * J)
 
-    def effects_step(self, dtheta, m: int = 0):
+    def effects_step(self, dtheta, m: int = 0, gradient=None):
         """The effects' part of the Newton step, given the parameters' part
         (over `parameters`): I_aa^-1 (g_a - I_at dtheta), zero for an effect
-        held. None without a fixed effect."""
+        held. None without a fixed effect. `gradient` as for `profiled`."""
         if self._fe is None:
             return None
         if self.information is None:
@@ -160,7 +173,7 @@ class NewtonMoments:
         H = self._schur(m)
         G, J = self.effects_gradient.shape[1:]
         Bf = H.ta.reshape(G * J, -1)
-        ga = self.effects_gradient[m]
+        ga = self._gradients(m, gradient)[1]
         d = ga - (Bf @ np.asarray(dtheta, np.float64)).reshape(G, J)
         return (H.Dinv @ d[..., None])[..., 0] * self._free[m]
 
@@ -495,6 +508,30 @@ class LogitDesign:
                 if len(idx):
                     yield sp, {k: (None if v is None else v[idx]) for k, v in sub.items()}
 
+    def _sorted_blocks(self):
+        """The stored blocks with their rows sorted by split: ``(block,
+        bounds)``, split s at rows bounds[s]:bounds[s + 1]."""
+        S = self.n_splits
+        for blk in self._store.iterate(["X", "y", "w", "fe", "cl"]):
+            s = self._split_of[blk["cl"][:, 0]]
+            order = np.argsort(s, kind="stable")
+            bounds = np.searchsorted(s[order], np.arange(S + 1))
+            sub = {"X": np.ascontiguousarray(blk["X"][order]), "y": blk["y"][order],
+                   "w": None if blk.get("w") is None else blk["w"][order]}
+            yield sub, bounds
+
+    @staticmethod
+    def _runs(cover):
+        """The runs of consecutive splits in `cover` (booleans): (first, end) pairs."""
+        out, start = [], None
+        for sp, c in enumerate(list(cover) + [False]):
+            if c and start is None:
+                start = sp
+            elif not c and start is not None:
+                out.append((start, sp))
+                start = None
+        return out
+
     def newton_pass(self, theta, effects=None, *, models=None, columns=None,
                     information: bool = True) -> NewtonMoments:
         """One read of the rows: each model's log-likelihood on every split,
@@ -599,16 +636,52 @@ class LogitDesign:
         numba = information and (fe0.numba_pass() if fe0 is not None
                                  else full_model.sparse(None))
         with _single_blas(numba):
-            for sp, blk in self._blocks():
-                for i in range(M):
-                    if models[i, sp]:
-                        ll[i, sp] += sums[i].add(blk)
-                        if restr[i] is not None:
-                            restr[i].add(blk)
-                    else:
-                        ll[i, sp] += held[i].add(blk)
+            if fe0 is None and S > 1 and information:
+                self._merged_pass(models, sums, held, restr, ll, rows, k)
+            else:
+                for sp, blk in self._blocks():
+                    for i in range(M):
+                        if models[i, sp]:
+                            ll[i, sp] += sums[i].add(blk)
+                            if restr[i] is not None:
+                                restr[i].add(blk)
+                        else:
+                            ll[i, sp] += held[i].add(blk)
         self.diagnostics["passes"] = self.passes + 1
         return self._moments(sums, restr, subs, params, ll, skipped, free, information)
+
+    def _merged_pass(self, models, sums, held, restr, ll, rows, k):
+        """The pass without a fixed effect, over splits: each block's rows
+        sorted by split once, so that a model's information comes from one
+        call per run of its consecutive splits (at most two), not one per
+        split -- a call's fixed cost outweighs its rows' on a split's piece
+        of a block. Each split's log-likelihood (and, when the information
+        is restricted, the gradient) still comes split by split, from the
+        passes without the information, which cost little."""
+        M, S = models.shape
+        runs = [self._runs(models[i]) for i in range(M)]
+        # the log-likelihood of each split when the information's sums are
+        # over runs of splits (theirs is only the runs' total)
+        llo = [(_Sums(sums[i].model, None, sums[i].theta, None, False, rows, k)
+                if restr[i] is None else None) for i in range(M)]
+        for blk, bounds in self._sorted_blocks():
+            def piece(a, b, blk=blk, bounds=bounds):
+                lo, hi = bounds[a], bounds[b]
+                return {key: (None if v is None else v[lo:hi]) for key, v in blk.items()}
+            pieces = [piece(sp, sp + 1) for sp in range(S)]
+            for i in range(M):
+                for sp in range(S):
+                    if bounds[sp + 1] == bounds[sp]:
+                        continue
+                    if models[i, sp]:
+                        one = sums[i] if restr[i] is not None else llo[i]
+                        ll[i, sp] += one.add(pieces[sp])
+                    else:
+                        ll[i, sp] += held[i].add(pieces[sp])
+                info = restr[i] if restr[i] is not None else sums[i]
+                for a, b in runs[i]:
+                    if bounds[b] > bounds[a]:
+                        info.add(piece(a, b) if b - a > 1 else pieces[a])
 
     def _moments(self, sums, restr, subs, params, ll, skipped, free, information):
         M, P, c = len(sums), self.n_params, len(params)
