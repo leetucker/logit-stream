@@ -73,7 +73,7 @@ import numpy as np
 from hdfe_stream.core.report import warn
 from numpy.polynomial.hermite import hermgauss
 
-from ..newton import _design, _Driver
+from ..core.newton import _design, _Driver
 
 MNL_NODES = 5               # the default points per dimension (random_nodes)
 MNL_MIN_NODES = 5           # fewer bias the fit (3 per dimension: a rare level's variance

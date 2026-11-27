@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .newton import _Driver
+from .core.newton import _Driver
 
 # line search: the full step alone (usually taken), then shorter ones a read
 # at a time, three per read

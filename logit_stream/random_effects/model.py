@@ -13,10 +13,10 @@ import polars as pl
 from hdfe_stream.core.report import warn
 from hdfe_stream.core.resources import MemoryBudget
 
-from ..fe import _group_sum, _mnl_group_info, _ordered_info_derivs, _segments
-from ..models import _gram, _mnl_info_sparse
-from ..newton import _chunks, _design, _Driver
-from ..store import CODE
+from ..core.fe import _group_sum, _mnl_group_info, _ordered_info_derivs, _segments
+from ..core.models import _gram, _mnl_info_sparse
+from ..core.newton import _chunks, _design, _Driver
+from ..core.store import CODE
 from .linalg import (
     _crossed_apply,
     _crossed_cov,
@@ -629,7 +629,7 @@ class _RandomEffects(_SigmaMixin):
         return (out + out.T) / 2
 
     def damp(self, H, lam):
-        from .newton import _floored
+        from ..core.newton import _floored
         idx = np.arange(self.m)
         levels = []
         for lev in H.levels:

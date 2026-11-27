@@ -5,8 +5,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import logit_stream.meat_kernels as MK
-import logit_stream.models as M
+import logit_stream.core.meat_kernels as MK
+import logit_stream.core.models as M
 from logit_stream import mlogit_stream, ologit_stream, oprobit_stream
 
 

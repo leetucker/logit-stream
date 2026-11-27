@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+- **`logit_stream.core`** has the multinomial and ordered models' stored design and Newton pass,
+  for packages that run their own iteration on them (penalized-stream's penalized multinomial and
+  ordered logit): `logit_design`, `LogitDesign` and `NewtonMoments`, a stable API. The passes are
+  the ones `mlogit_stream`, `ologit_stream` and `oprobit_stream` fit by, with their kernels
+  unchanged. One read of the rows evaluates several models at once, each on its own splits of the
+  rows (cross-validation folds), and gives every model's log-likelihood on every split. The
+  information can be limited to an active set of columns, while the gradient covers every
+  parameter. With one absorbed fixed effect, its effects are profiled out exactly, and a group can
+  be left out of one model.
+- The engine moved into `logit_stream.core`: the likelihoods and their fused passes (`models`),
+  one absorbed fixed effect (`fe`, `fe_kernels`), pass 0 (`store`), the Newton iteration
+  (`newton`) and the robust variances' kernels (`meat_kernels`). The estimators are unchanged.
+- Fixed an import in the random intercepts' damped Newton step, which would have failed had a
+  step needed damping.
+
 ## 0.7.0
 
 The binary logit and probit are fitted by hdfe-stream (0.13.0 or later), and report as this

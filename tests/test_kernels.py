@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from logit_stream import mlogit_stream
-from logit_stream.models import _Conditional, _Multinomial, _Ordered
+from logit_stream.core.models import _Conditional, _Multinomial, _Ordered
 
 
 def _indicator_design(rng, n, K):
@@ -34,7 +34,7 @@ def test_sparse_and_dense_information_agree(weighted):
 
 def test_fit_uses_the_sparse_path_and_agrees(mnl_data):
     a = mlogit_stream("y ~ x1 + x2 + C(g)", mnl_data, verbose=False, tol=1e-14)
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     old = M.SPARSE_DENSITY
     try:
         M.SPARSE_DENSITY = -1.0              # force the dense products
@@ -49,7 +49,7 @@ def test_fit_uses_the_sparse_path_and_agrees(mnl_data):
 def test_fixed_effects_sparse_and_dense_agree(fe_data, weights):
     import polars as pl
 
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     df = fe_data.with_columns(x2w=pl.col("x2").abs() + 0.5)
     fits = []
     old = M.SPARSE_DENSITY
@@ -123,7 +123,7 @@ def _mnl_model(rng, n, K, J, own=None, density=None):
 @pytest.mark.parametrize("own", [None, [0, 1, 2]], ids=["plain", "own"])
 @pytest.mark.parametrize("hessian", [True, False])
 def test_fused_pass_equals_the_array_code(monkeypatch, density, weighted, own, hessian):
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     rng = np.random.default_rng(5)
     n, K, J = 6000, 12, 4
     m, X, y, th = _mnl_model(rng, n, K, J, own, density)
@@ -172,7 +172,7 @@ def test_small_blocks_and_very_wide_dense_designs_use_the_array_code():
 
 @pytest.mark.parametrize("weights", [None, "w"])
 def test_fit_agrees_with_the_array_code(mnl_data, monkeypatch, weights):
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     kw = dict(weights=weights, weights_type="fweights", vcov={"CRV1": "cl"}, verbose=False,
               tol=1e-14)
     a = mlogit_stream("y ~ x1 + x2 + C(g)", mnl_data, **kw)
@@ -184,7 +184,7 @@ def test_fit_agrees_with_the_array_code(mnl_data, monkeypatch, weights):
 
 
 def test_diagnostics_report_the_information_form(mnl_data, monkeypatch):
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     fml = "y ~ x1 + x2 + C(g)"
     fit = mlogit_stream(fml, mnl_data, verbose=False)
     info = fit.diagnostics["information"]
@@ -221,7 +221,7 @@ def _ord_model(rng, n, K, link, density):
 @pytest.mark.parametrize("hessian", [True, False])
 def test_ordered_fused_pass_equals_the_array_code(monkeypatch, link, density, weighted, offset,
                                                   hessian):
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     rng = np.random.default_rng(11)
     n, K = 6000, 9
     m, X, y, th = _ord_model(rng, n, K, link, density)
@@ -281,7 +281,7 @@ def test_ordered_fallbacks():
 @pytest.mark.parametrize("weights", [None, "w"])
 def test_ordered_fit_agrees_with_the_array_code(ord_data, monkeypatch, fit_fn, weights):
     import logit_stream
-    import logit_stream.models as M
+    import logit_stream.core.models as M
     fit = getattr(logit_stream, fit_fn)
     kw = dict(weights=weights, weights_type="fweights", vcov={"CRV1": "cl"}, verbose=False,
               tol=1e-14)

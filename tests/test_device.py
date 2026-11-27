@@ -61,7 +61,7 @@ def test_multinomial(data, numpy_device):
 def test_binary_columns_stay_compact(data, numpy_device):
     """The 0/1 columns go over as bytes and stay so on the device; the
     estimates are as with them stored whole."""
-    import logit_stream.store as st
+    import logit_stream.core.store as st
     g = mlogit_stream("y ~ x1 + x2 + C(g)", data, device="cuda", **KW)
     n, K = data.height, 8                       # intercept, x1, x2, five indicators
     assert g.diagnostics["device"]["bytes"] < 0.6 * n * K * 8
@@ -301,7 +301,7 @@ def test_robust_variances_on_the_device(data, fe_data, choice_data, numpy_device
     """The robust and clustered variances' scores pass on the device: the
     same vcovs as the CPU's (one-way, multi-way, by row), with the CPU's
     accumulation of the scores made to fail under device="cuda"."""
-    from logit_stream.newton import _Driver
+    from logit_stream.core.newton import _Driver
     d = {"data": data.with_columns(o=pl.col("g") % 3), "fe": fe_data, "re": _re_data(),
          "choice": choice_data.with_columns(region=pl.col("case") % 17)}
     df = get(d)
@@ -323,7 +323,7 @@ def test_robust_variances_on_the_device_nested_and_cfe(numpy_device, monkeypatch
     import test_nested as T
 
     from logit_stream import cfelogit_stream, nlogit_stream
-    from logit_stream.newton import _Driver
+    from logit_stream.core.newton import _Driver
     orig = _Driver._add_meat
     monkeypatch.setattr(_Driver, "_add_meat", staticmethod(_refuse))
     nd = T._simulate(1500).with_columns(region=pl.col("case") % 23, aw=pl.col("case") % 3 + 1.0)

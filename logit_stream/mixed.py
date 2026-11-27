@@ -39,7 +39,7 @@ import numba as nb
 import numpy as np
 
 from ._limits import limited
-from .newton import _Driver
+from .core.newton import _Driver
 from .optimize import _GradientDriver
 
 PRIMES = np.array([2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
@@ -405,10 +405,10 @@ def _fit_mixed(fml, data, *, case, panel=None, random, draws=500, halton=True, s
     from hdfe_stream.core.workspace import Run
 
     from ._choice import clogit_start, fit_diagnostics, plan_one
+    from .core.store import _build
     from .device import resolve
     from .estimator import _base_dir, _clogit_null, _log
     from .results import MixedLogitResult, _ic
-    from .store import _build
     vcov = vcov_key(vcov)
     if not random:
         raise ValueError("random= is empty: with no random coefficients, use clogit_stream")

@@ -6,10 +6,10 @@ import numpy as np
 import polars as pl
 import pytest
 
+import logit_stream.core.fe_kernels as FK
 import logit_stream.estimator as est
-import logit_stream.fe_kernels as FK
 from logit_stream import mlogit_stream, ologit_stream, oprobit_stream
-from logit_stream.fe_kernels import part_starts
+from logit_stream.core.fe_kernels import part_starts
 
 
 @pytest.fixture(scope="module")
@@ -107,7 +107,7 @@ def test_a_level_too_big_for_a_block_leaves_the_rows_unsorted(data, monkeypatch)
 def test_the_wide_designs_keep_the_array_passes(data, monkeypatch):
     seen = _spy(monkeypatch)
     monkeypatch.setattr(FK, "_parts", FK._parts)           # (the kernels are importable)
-    import logit_stream.fe as fe_mod
+    import logit_stream.core.fe as fe_mod
     monkeypatch.setattr(fe_mod, "ORD_KERNEL_MAX_K", 2)
     fit = ologit_stream(f"yo ~ {RHS} | g", data, verbose=False)
     assert seen["blocks"] == 0 and fit.diagnostics["information"]["form"] == "array"
@@ -130,7 +130,7 @@ def test_parts_start_at_group_boundaries(n_parts):
 
 # ------------------------------------------------- the ordered fixed-effects-only null
 def _table(rng, link, G, J, per, thin=False):
-    from logit_stream.models import LINKS
+    from logit_stream.core.models import LINKS
     L = LINKS[link]
     loc, cuts = rng.normal(size=G), np.sort(rng.normal(size=J - 1))
     cdf = np.c_[np.zeros(G), L.cdf(cuts[None, :] - loc[:, None]), np.ones(G)]
@@ -145,7 +145,7 @@ def _table(rng, link, G, J, per, thin=False):
 @pytest.mark.parametrize("G,J,per,thin", [(40, 2, 30, False), (60, 3, 25, False),
                                           (300, 5, 40, False), (200, 6, 12, True)])
 def test_the_table_null_by_newton_equals_lbfgs(link, G, J, per, thin):
-    from logit_stream.fe import _ordered_table_lbfgs, _ordered_table_newton
+    from logit_stream.core.fe import _ordered_table_lbfgs, _ordered_table_newton
     n, L = _table(np.random.default_rng(G + J), link, G, J, per, thin)
     newton = _ordered_table_newton(n, L)
     assert newton is not None
@@ -153,7 +153,7 @@ def test_the_table_null_by_newton_equals_lbfgs(link, G, J, per, thin):
 
 
 def test_the_table_null_falls_back_to_lbfgs_when_newton_fails(monkeypatch):
-    import logit_stream.fe as fe_mod
+    import logit_stream.core.fe as fe_mod
     n, L = _table(np.random.default_rng(1), "logit", 80, 4, 30)
     expect = fe_mod._ordered_table_lbfgs(n, L)
     monkeypatch.setattr(fe_mod, "_ordered_table_newton", lambda *a, **k: None)
@@ -161,7 +161,7 @@ def test_the_table_null_falls_back_to_lbfgs_when_newton_fails(monkeypatch):
 
 
 def test_the_tall_product_equals_the_plain_one():
-    from logit_stream.fe import _tall_product
+    from logit_stream.core.fe import _tall_product
     rng = np.random.default_rng(2)
     A, B = rng.normal(size=(90_000, 7)), rng.normal(size=(90_000, 5))
     np.testing.assert_allclose(_tall_product(A, B), A.T @ B, rtol=1e-10, atol=1e-9)
@@ -212,7 +212,7 @@ def _count_meat(monkeypatch):
 @pytest.mark.parametrize("owner", [False, True], ids=["copies per part", "owned clusters"])
 @pytest.mark.parametrize("name", list(VCASES))
 def test_grouped_variance_kernels_equal_the_numpy_pass(vdata, monkeypatch, name, owner):
-    import logit_stream.meat_kernels as MK
+    import logit_stream.core.meat_kernels as MK
     fn, fml, kw = VCASES[name]
     calls = _count_meat(monkeypatch)
     if owner:
@@ -231,7 +231,7 @@ def test_grouped_variance_kernels_equal_the_numpy_pass(vdata, monkeypatch, name,
 
 
 def test_the_variance_pass_keeps_the_numpy_code_for_many_slopes(vdata, monkeypatch):
-    import logit_stream.fe as fe_mod
+    import logit_stream.core.fe as fe_mod
     calls = _count_meat(monkeypatch)
     monkeypatch.setattr(fe_mod, "FE_MEAT_MAX_P", 3)
     ologit_stream(f"yo ~ {RHS} | g", vdata, vcov="hetero", verbose=False)
@@ -246,7 +246,7 @@ def test_rows_that_cannot_be_sorted_inside_the_memory_limit_stay_unsorted(data, 
     sorted_fit = ologit_stream(f"yo ~ {RHS} | g", data, verbose=False)
     assert seen["blocks"] > 0
     seen["blocks"] = 0
-    monkeypatch.setattr("logit_stream.store._partition_gb", lambda path, rows: 1e6)
+    monkeypatch.setattr("logit_stream.core.store._partition_gb", lambda path, rows: 1e6)
     tight = ologit_stream(f"yo ~ {RHS} | g", data, verbose=False)
     assert seen["blocks"] == 0
     assert np.allclose(tight.beta, sorted_fit.beta, rtol=0, atol=1e-8)
@@ -278,7 +278,7 @@ def test_weights_and_clusters_count_the_rows_used(data, name):
 
 @pytest.mark.parametrize("rows", [7, 100, 10_000])
 def test_grouped_counts_runs_across_batches(tmp_path, rows):
-    from logit_stream.store import _grouped
+    from logit_stream.core.store import _grouped
     rng = np.random.default_rng(3)
     g = np.sort(rng.integers(0, 40, 500))
     path = tmp_path / "d.parquet"

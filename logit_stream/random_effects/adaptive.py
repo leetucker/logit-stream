@@ -58,7 +58,7 @@ import numpy as np
 from hdfe_stream.core.report import warn
 from numpy.polynomial.hermite import hermgauss
 
-from ..newton import _design, _Driver
+from ..core.newton import _design, _Driver
 from .adaptive_mnl import _bysum
 from .slopes import _ord_kernel_z, _points
 

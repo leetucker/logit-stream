@@ -63,8 +63,8 @@ import polars as pl
 from hdfe_stream.core.report import warn
 from hdfe_stream.core.resources import MemoryBudget
 
-from .newton import _Driver, _Fit
-from .store import CODE
+from .core.newton import _Driver, _Fit
+from .core.store import CODE
 
 BLOCK_MAX = 5_000           # "auto": the largest group of levels the blocks take
 PINV_TOL = 1e-10            # a block's eigenvalues below this times its largest are 0
@@ -630,7 +630,7 @@ class _AlternativeFE:
         return SimpleNamespace(tt=H.tt + np.diag(add), ta=H.ta, aa=H.aa, diag=H.diag, red=None)
 
     def damp(self, H, lam):
-        from .newton import _floored
+        from .core.newton import _floored
         dt = _floored(np.abs(np.diag(H.tt)))
         aa = H.aa.copy()
         for s, comps in self._groups_by_size():

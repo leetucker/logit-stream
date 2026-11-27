@@ -11,7 +11,7 @@ import statsmodels.api as sm
 import logit_stream
 from logit_stream import clogit_stream, etable, mlogit_stream, ologit_stream
 from logit_stream import logit_stream as logit
-from logit_stream.newton import _Driver
+from logit_stream.core.newton import _Driver
 
 
 def test_public_api():

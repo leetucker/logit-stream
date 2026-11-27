@@ -443,7 +443,7 @@ class _AbsorbedFE:
 
     def _device_pass(self, driver, theta, hessian):
         """`pass_` with the sums formed on the GPU (device/)."""
-        from . import device
+        from .. import device
         driver.passes += 1
         if driver._dstore is None:
             driver._dstore = device.DeviceStore(self.store, driver.device)
@@ -601,7 +601,7 @@ class _AbsorbedFE:
         absorb, s_b - H_bg H_gg^-1 s_g (the influence of the row on b̂). On
         the device too (`device.fe_meat`) with device=."""
         if driver.device is not None:
-            from . import device
+            from .. import device
             return device.fe_meat(driver.device.xp, self, driver, theta, H, weights_type,
                                   clusters, hetero)
         m = self.model

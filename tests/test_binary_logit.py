@@ -193,8 +193,8 @@ def test_the_probit_expected_information_is_the_same_without_the_kernels(
     """The fused passes and the NumPy ones form the same expected information."""
     kw = dict(workdir=tmp_path, verbose=False, vcov={"CRV1": "c"})
     fast = probit_stream(fml, data, **kw)
-    monkeypatch.setattr("logit_stream.models.MNL_KERNEL_MIN_ROWS", 10 ** 9)
-    monkeypatch.setattr("logit_stream.fe.MNL_KERNEL_MIN_ROWS", 10 ** 9)
+    monkeypatch.setattr("logit_stream.core.models.MNL_KERNEL_MIN_ROWS", 10 ** 9)
+    monkeypatch.setattr("logit_stream.core.fe.MNL_KERNEL_MIN_ROWS", 10 ** 9)
     slow = probit_stream(fml, data, **kw)
     assert np.allclose(fast.beta, slow.beta, rtol=0, atol=1e-9)
     for key in fast.all_vcovs:

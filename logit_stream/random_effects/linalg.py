@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import numba as nb
 import numpy as np
 
-from ..fe import _sym
-from ..newton import _Driver
+from ..core.fe import _sym
+from ..core.newton import _Driver
 
 
 @nb.njit(parallel=True, cache=True)

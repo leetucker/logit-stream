@@ -398,7 +398,7 @@ mlogit_stream.__doc__ = """Out-of-core multinomial logit by streamed Newton.
 
     P(y = j | x) = exp(x'b_j) / sum_l exp(x'b_l), with b = 0 for the base
     level (the first of `levels`). Each Newton step is one read of the
-    sample's blocks (see `logit_stream.newton`).
+    sample's blocks (see `logit_stream.core.newton`).
 
     Parameters
     ----------

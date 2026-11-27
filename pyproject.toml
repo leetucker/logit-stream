@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "logit-stream"
-version = "0.7.0"
+version = "0.8.0"
 description = "Out-of-core logit models by streamed Newton: binary, multinomial, ordered and conditional logit, with absorbed fixed effects"
 readme = "README.md"
 license = "MIT"
